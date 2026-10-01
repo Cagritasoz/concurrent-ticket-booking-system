@@ -1,5 +1,11 @@
 package booking
 
+import "errors"
+
+var (
+	ErrSeatAlreadyBooked = errors.New("seat already booked")
+)
+
 type Booking struct {
 	ID      string // Uppercase means accessible within the package.
 	MovieID string // Lowercase means not accessible (like private in Java)

@@ -6,7 +6,7 @@ type MemoryStore struct { // MemoryStore implements BookingStore interface
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		bookings: map[string]Booking{}, // Initialized empty map, alternatively make function acn be used.
+		bookings: map[string]Booking{}, // Initialized empty map, alternatively make function can be used.
 	}
 }
 

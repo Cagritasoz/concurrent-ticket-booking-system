@@ -1,7 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+const defaultHoldTTL = 2 * time.Minute
 
 func main() {
-	fmt.Println("Hello World")
+	fmt.Println(defaultHoldTTL)
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	goredis "github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9" // imported as goredis so that the package name redis does not collide.
 )
 
 func NewClient(addr string) *goredis.Client {

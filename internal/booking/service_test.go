@@ -15,7 +15,11 @@ func TestConcurrentBooking_ExactlyOneWins(t *testing.T) {
 
 	// DI (Dependency Injection): the adapter creates the client, the store receives it, the service receives the store.
 	rdb := redis.NewClient("localhost:6379")
-	t.Cleanup(func() { rdb.Close() }) // t.Cleanup runs after the test finishes, like @AfterEach in JUnit.
+	t.Cleanup(func() {
+		err := rdb.Close()
+		if err != nil {
+			return
+		} }) // t.Cleanup runs after the test finishes, like @AfterEach in JUnit.
 
 	redisStore := NewRedisStore(rdb)
 	svc := NewService(redisStore)

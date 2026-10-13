@@ -75,12 +75,12 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 		return Booking{}, err
 	}
 
-	seat := seatKey(b.MovieID, b.SeatID)
+	seatKey := seatKey(b.MovieID, b.SeatID)
 
 	// NX: only set if the key doesn't exist yet, TTL: Redis deletes the key when the hold expires.
 	// Both happen in one atomic command, so exactly one goroutine can win the seat.
 	// The value parameter of SetArgs has type interface{} which is like the Object class in Java, takes any type.
-	err = s.rdb.SetArgs(ctx, seat, value, redis.SetArgs{
+	err = s.rdb.SetArgs(ctx, seatKey, value, redis.SetArgs{
 		Mode: "NX",
 		TTL:  defaultHoldTTL,
 	}).Err()
@@ -90,16 +90,16 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 		return Booking{}, ErrSeatAlreadyBooked
 	}
 	if err != nil { // Another error that is not redis.Nil
-		return Booking{}, fmt.Errorf("hold seat %s: %w", seat, err)
+		return Booking{}, fmt.Errorf("hold seat %s: %w", seatKey, err)
 	}
 
 	// Reverse lookup: session -> seat key. Stores the full seat key (not just SeatID) so the seat can be found
 	// without knowing the movie. Same TTL as the hold, so both expire together.
-	if err := s.rdb.Set(ctx, sessionKey(b.ID), seat, defaultHoldTTL).Err(); err != nil {
+	if err := s.rdb.Set(ctx, sessionKey(b.ID), seatKey, defaultHoldTTL).Err(); err != nil {
 
 		// The seat is already held but the session key failed, undo the hold so the seat isn't stuck for the TTL.
 		// Uses a fresh context so the cleanup still runs if ctx was canceled.
-		if delErr := s.rdb.Del(context.Background(), seat).Err(); delErr != nil {
+		if delErr := s.rdb.Del(context.Background(), seatKey).Err(); delErr != nil {
 			return Booking{}, fmt.Errorf("save session %s: %w", b.ID, errors.Join(err, delErr))
 		}
 		return Booking{}, fmt.Errorf("save session %s: %w", b.ID, err)

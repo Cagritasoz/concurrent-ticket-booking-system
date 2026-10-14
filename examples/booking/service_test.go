@@ -8,7 +8,7 @@ import (
 	"testing"
 	"uuid"
 
-	"concurrent-ticket-booking-system/internal/adapters/redis"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/examples/adapters/redis"
 )
 
 func TestConcurrentBooking_ExactlyOneWins(t *testing.T) {

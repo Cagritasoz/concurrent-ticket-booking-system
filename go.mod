@@ -1,4 +1,4 @@
-module concurrent-ticket-booking-system
+module github.com/Cagritasoz/concurrent-ticket-booking-system
 
 go 1.27
 

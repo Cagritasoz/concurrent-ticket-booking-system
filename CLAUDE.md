@@ -33,10 +33,15 @@ it is the best way to learn.
 ## 2. Current status
 
 - **Branch:** `milestone/foundation` (branched from `main` at `4507eab`).
-- **Milestone:** M0 Foundation. **Step 1 done** (`cmd/ticketing/main.go` with `main` → `run(ctx) error`;
-  old `cmd/main.go` deleted). **Next step: M0 step 2** (`internal/config`). Not started.
+- **Milestone:** M0 Foundation.
+  - **Step 1 done:** `cmd/ticketing/main.go` with `main` → `run(ctx) error`; old `cmd/main.go` deleted.
+  - **Step 2 done:** `internal/config` (`Load(os.LookupEnv)` → `Config`, defaults, `Validate()`
+    reporting all errors with `errors.Join`), table-driven tests, `.env.example`, `docs/env.md`.
+    `run` prints the config with `fmt` until the logger exists.
+  - **Next step: M0 step 3** (logging with `log/slog`). Not started.
+  - Done early from step 7: `.idea/` added to `.gitignore`; the owner untracks it with
+    `git rm -r --cached .idea`.
 - `main` contains only the early learning code, now under `examples/` (see section 9).
-- No application code exists yet under `internal/` (so `./internal/...` reports "no such file" until step 2).
 - Open decisions: see section 7.
 
 ---

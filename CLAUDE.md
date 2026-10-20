@@ -37,8 +37,10 @@ it is the best way to learn.
   - **Step 1 done:** `cmd/ticketing/main.go` with `main` → `run(ctx) error`; old `cmd/main.go` deleted.
   - **Step 2 done:** `internal/config` (`Load(os.LookupEnv)` → `Config`, defaults, `Validate()`
     reporting all errors with `errors.Join`), table-driven tests, `.env.example`, `docs/env.md`.
-    `run` prints the config with `fmt` until the logger exists.
-  - **Next step: M0 step 3** (logging with `log/slog`). Not started.
+  - **Step 3 done:** `internal/platform/telemetry.NewLogger(level, format, w) (*slog.Logger, error)`
+    (JSON or text handler, level filtering, no `slog.SetDefault`), tests write to a `bytes.Buffer`.
+    `run` builds the logger from config, logs to stdout and logs selected startup fields only.
+  - **Next step: M0 step 4** (Gin server, timeouts, `/healthz`, `/readyz`). Not started.
   - Done early from step 7: `.idea/` added to `.gitignore`; the owner untracks it with
     `git rm -r --cached .idea`.
 - `main` contains only the early learning code, now under `examples/` (see section 9).
@@ -223,6 +225,7 @@ doesn't end the booking; the customer can retry until it expires. These are expl
 | 2026-10-20 | M0: tests are written in each step (not saved for step 6). Env vars have no prefix (`HTTP_ADDR`, ...). Default port `8080`. No `godotenv`: locally the owner feeds a `.env` file to the process with an IntelliJ/GoLand .env plugin, and the app reads plain env vars with defaults. |
 | 2026-10-20 | Tooling: GNU `make` from MSYS2 (`C:\msys64\usr\bin`) for the Makefile, `golangci-lint` v2 for linting. No cross-platform task-runner alternative. |
 | 2026-10-20 | Tests cover only the real code (`./cmd/... ./internal/...`). `examples/` is left untouched and its tests are not part of the step/CI test runs. |
+| open (decide in M9) | **Observability stack.** Recommended: Prometheus (scrapes `/metrics`) + Grafana in compose, added in M9 alongside the k6 load tests. Loki and Tempo not planned: logs are JSON on stdout (Loki-ready if ever needed) and one binary gains little from tracing. Discussed with the owner on 2026-10-21. |
 | open (decide in M1) | **Inventory model.** Recommended: one `tickets` row per sellable unit, including general admission (N identical rows), so rule I1 covers everything. Alternative: a `remaining` counter for GA (compact, but a single hot row and a second mechanism). Explained to the owner on 2026-10-14. |
 | open (decide in M7) | **Late payment on an expired booking.** Recommended: pause expiry while payment is processing; on a late success, reclaim the same tickets if free, otherwise refund automatically. Possible later upgrade: Stripe authorize-then-capture (`capture_method=manual`). "Always refund" was rejected as needlessly unfriendly. Explained on 2026-10-14. |
 

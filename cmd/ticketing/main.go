@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/config"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/telemetry"
 )
 
 // main stays tiny on purpose. It only calls run and decides how the process exits.
@@ -40,8 +41,19 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Temporary output until the logger exists (step 3).
-	fmt.Printf("ticketing: starting with config %+v\n", cfg)
+	// Logs go to stdout. In production the platform (Docker, Kubernetes) collects stdout and ships
+	// it to a log store, so the app never writes log files itself.
+	logger, err := telemetry.NewLogger(cfg.Log.Level, cfg.Log.Format, os.Stdout)
+	if err != nil {
+		return fmt.Errorf("create logger: %w", err)
+	}
+
+	// Log selected fields only, never the whole config: later it will contain secrets.
+	logger.Info("starting ticketing",
+		"http_addr", cfg.HTTP.Addr,
+		"log_level", cfg.Log.Level,
+		"log_format", cfg.Log.Format,
+	)
 
 	return nil
 }

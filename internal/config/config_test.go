@@ -10,11 +10,12 @@ import (
 // so tests don't depend on (or change) the variables of the machine running them.
 func fakeEnv(vars map[string]string) LookupFunc {
 	return func(key string) (string, bool) {
-		v, ok := vars[key]
+		v, ok := vars[key] // ok indicates exists.
 		return v, ok
 	}
 }
 
+// No environment variables given, defaults must be used.
 func TestLoad_Defaults(t *testing.T) {
 	cfg, err := Load(fakeEnv(nil))
 	if err != nil {
@@ -29,10 +30,14 @@ func TestLoad_Defaults(t *testing.T) {
 			WriteTimeout:      15 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		},
-		Log:             LogConfig{Level: "info", Format: "json"},
+		Log: LogConfig{
+			Level:  "info",
+			Format: "json",
+		},
 		ShutdownTimeout: 20 * time.Second,
 	}
 	// Structs made of comparable fields can be compared with ==, like a record's equals() in Java.
+	// %+v means print the value in its default format, including struct field names.
 	if cfg != want {
 		t.Errorf("defaults:\n got  %+v\n want %+v", cfg, want)
 	}

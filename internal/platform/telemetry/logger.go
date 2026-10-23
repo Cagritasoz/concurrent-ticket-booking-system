@@ -39,7 +39,8 @@ func NewLogger(level, format string, w io.Writer) (*slog.Logger, error) {
 		return nil, fmt.Errorf("unknown log format %q (want json or text)", format)
 	}
 
-	return slog.New(handler), nil
+	// contextHandler adds the request ID from the context to every line (see requestid.go).
+	return slog.New(contextHandler{handler}), nil
 }
 
 // parseLevel turns a level name into a slog.Level.

@@ -40,7 +40,18 @@ it is the best way to learn.
   - **Step 3 done:** `internal/platform/telemetry.NewLogger(level, format, w) (*slog.Logger, error)`
     (JSON or text handler, level filtering, no `slog.SetDefault`), tests write to a `bytes.Buffer`.
     `run` builds the logger from config, logs to stdout and logs selected startup fields only.
-  - **Next step: M0 step 4** (Gin server, timeouts, `/healthz`, `/readyz`). Not started.
+  - **Step 4 done:** Gin v1.12.0 in `internal/httpapi`: `NewRouter(logger, *Readiness)` with
+    `gin.New()`, release mode (set in `init`), no trusted proxies, slog request-logging middleware
+    (5xx error, 4xx warn, health checks debug) and slog-based recovery. `/healthz` always 200,
+    `/readyz` 200/503 from `Readiness` (`atomic.Bool`). `main` listens first, then marks ready, and
+    serves through an `http.Server` with the config timeouts. Basic `httptest` tests.
+    Request IDs: `requestID` middleware (first in the chain) reuses a valid incoming `X-Request-ID`
+    (≤64 chars of `[A-Za-z0-9-_.]`) or generates a UUID, echoes it in the response header and stores
+    it in the request context (`telemetry.ContextWithRequestID`). A wrapping slog handler in
+    `telemetry` adds `request_id` to every line logged with that context (MDC-style). Services must
+    log with `logger.XxxContext(ctx, ...)` to get it.
+    No graceful shutdown yet (Ctrl+C kills the process).
+  - **Next step: M0 step 5** (graceful shutdown). Not started.
   - Done early from step 7: `.idea/` added to `.gitignore`; the owner untracks it with
     `git rm -r --cached .idea`.
 - `main` contains only the early learning code, now under `examples/` (see section 9).

@@ -8,9 +8,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
 	"os"
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/config"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/telemetry"
 )
 
@@ -55,5 +59,41 @@ func run(ctx context.Context) error {
 		"log_format", cfg.Log.Format,
 	)
 
+	readiness := &httpapi.Readiness{}
+	router := httpapi.NewRouter(logger, readiness)
+	server := newHTTPServer(cfg.HTTP, router, logger)
+
+	// Open the port first, then mark the app ready: /readyz only says "ready" once we can
+	// actually accept connections.
+	listener, err := net.Listen("tcp", cfg.HTTP.Addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.HTTP.Addr, err)
+	}
+	readiness.SetReady(true)
+	logger.Info("http server listening", "addr", listener.Addr().String())
+
+	// Serve blocks until the server stops. Until graceful shutdown exists (step 5), Ctrl+C
+	// simply kills the process.
+	if err := server.Serve(listener); err != nil {
+		return fmt.Errorf("http server: %w", err)
+	}
 	return nil
+}
+
+// newHTTPServer wraps the router in a standard http.Server with timeouts.
+//
+// Gin's own router.Run() starts a server with no timeouts at all, so one slow or malicious
+// client could hold a connection (and its goroutine) open forever. Each timeout below limits
+// one phase of a request; the values come from config (see docs/env.md).
+func newHTTPServer(cfg config.HTTPConfig, handler http.Handler, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		// The server's own errors (e.g. a TLS handshake failure) go through slog too.
+		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
 }

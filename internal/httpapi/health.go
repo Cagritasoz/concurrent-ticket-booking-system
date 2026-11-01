@@ -11,6 +11,9 @@ import (
 // app. It must not check databases: a database outage is not fixed by restarting the app.
 // Spring equivalent: /actuator/health/liveness.
 func healthz(c *gin.Context) {
+	// c.JSON writes the status code and body to c.Writer, which is Gin's wrapper around Go's standard http.ResponseWriter.
+	// Go's net/http buffers what we write, a few KB at a time. When the handler chain finishes
+	// (the outermost c.Next() returns), the server flushes the buffer and the client receives the response.
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
@@ -19,6 +22,7 @@ func healthz(c *gin.Context) {
 // and from M1 also when Postgres is unreachable). A load balancer stops sending requests to an
 // instance that answers 503, without restarting it.
 // Spring equivalent: /actuator/health/readiness.
+// It is a factory function that takes in a readiness struct pointer.
 //
 // readyz takes the Readiness it needs and returns the handler, so the handler can use it later.
 // A function returning a function that remembers variables like this is called a closure.

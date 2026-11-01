@@ -17,7 +17,7 @@ import (
 //     "text" (key=value pairs, easier to read in a terminal).
 //
 // The returned logger is passed to the parts of the app that need it through their constructors.
-// We don't call slog.SetDefault, so there is no global logger (see the conventions in CLAUDE.md).
+// We don't call slog.SetDefault, so there is no global logger (see docs/open/03-architecture.md).
 func NewLogger(level, format string, w io.Writer) (*slog.Logger, error) {
 	lvl, err := parseLevel(level)
 	if err != nil {

@@ -58,22 +58,32 @@ func run(ctx context.Context) error {
 		"log_level", cfg.Log.Level,
 		"log_format", cfg.Log.Format,
 	)
-
-	readiness := &httpapi.Readiness{}
+	readiness := &httpapi.Readiness{} // Set to false as its zero value.
 	router := httpapi.NewRouter(logger, readiness)
-	server := newHTTPServer(cfg.HTTP, router, logger)
 
 	// Open the port first, then mark the app ready: /readyz only says "ready" once we can
 	// actually accept connections.
+	// Listen asks the operating system to open port 8080 and start accepting connections.
 	listener, err := net.Listen("tcp", cfg.HTTP.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.HTTP.Addr, err)
 	}
+
+	// The server is created only after the port is open, so there is nothing to clean up if
+	// Listen fails. From here on, the deferred Close runs on every way out of run (like a
+	// try-with-resources block in Java): it closes the listener and any connections still open.
+	server := newHTTPServer(cfg.HTTP, router, logger)
+	defer func() {
+		if err := server.Close(); err != nil {
+			logger.Error("close http server", "error", err)
+		}
+	}()
+
 	readiness.SetReady(true)
 	logger.Info("http server listening", "addr", listener.Addr().String())
 
 	// Serve blocks until the server stops. Until graceful shutdown exists (step 5), Ctrl+C
-	// simply kills the process.
+	// simply kills the process. .Serve starts the server, return nil line runs after server stops.
 	if err := server.Serve(listener); err != nil {
 		return fmt.Errorf("http server: %w", err)
 	}
@@ -84,11 +94,11 @@ func run(ctx context.Context) error {
 //
 // Gin's own router.Run() starts a server with no timeouts at all, so one slow or malicious
 // client could hold a connection (and its goroutine) open forever. Each timeout below limits
-// one phase of a request; the values come from config (see docs/env.md).
+// one phase of a request; the values come from config (see docs/open/07-configuration.md).
 func newHTTPServer(cfg config.HTTPConfig, handler http.Handler, logger *slog.Logger) *http.Server {
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           handler,
+		Handler:           handler, // *gin.Engine is passed as handler, which has the required Handler interfaces serveHttp func.
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,

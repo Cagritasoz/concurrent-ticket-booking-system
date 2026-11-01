@@ -31,12 +31,18 @@ func NewRouter(logger *slog.Logger, readiness *Readiness) *gin.Engine {
 	// Middleware runs for every request, in the order added, like servlet filters.
 	// requestID comes first so every later log line has the ID. requestLogger comes before
 	// recovery so it wraps it and also logs requests that panicked (as 500).
+	// All functions below return a gin.HandlerFunc
 	router.Use(
 		requestID(),
 		requestLogger(logger),
 		recovery(logger),
 	)
 
+	// no () for healthz → passes the function itself, doesn't call it.
+	// It doesn't run it at that point; it stores it and calls it
+	// later, once per request, passing in that request's *gin.Context.
+	// In a way the following code is saying when a request is sent to this path call this handler func.
+	// We can think of it like spring's controller method.
 	router.GET("/healthz", healthz)
 	router.GET("/readyz", readyz(readiness))
 

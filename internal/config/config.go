@@ -3,7 +3,7 @@
 //
 // It plays the role of application.properties + @ConfigurationProperties + @Validated in Spring
 // Boot. Every variable has a default, so the app starts without any environment set.
-// The full list of variables is documented in docs/env.md and .env.example.
+// The full list of variables is documented in docs/open/07-configuration.md and .env.example.
 package config
 
 import (

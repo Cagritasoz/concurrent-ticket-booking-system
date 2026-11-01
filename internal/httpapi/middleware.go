@@ -36,10 +36,10 @@ func requestID() gin.HandlerFunc {
 		// the request using the new context, and we replace c.Request so everything after this
 		// middleware (other middleware, handlers, services) sees it.
 		ctx := telemetry.ContextWithRequestID(c.Request.Context(), id)
-		c.Request = c.Request.WithContext(ctx)
+		c.Request = c.Request.WithContext(ctx) // replace the context of the request.
 		c.Header(requestIDHeader, id)
 
-		c.Next()
+		c.Next() // Call the next middleware
 	}
 }
 
@@ -103,9 +103,10 @@ func requestLogger(logger *slog.Logger) gin.HandlerFunc {
 // function below logs the panic through slog instead. Gin still handles broken client
 // connections itself (no stack trace for those).
 func recovery(logger *slog.Logger) gin.HandlerFunc {
+	// A panic can only be stopped via a defer function that calls builtin recover() method, gin has built it for us.
 	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
 		logger.ErrorContext(c.Request.Context(), "panic recovered",
-			"panic", recovered,
+			"panic", recovered, // Whatever value was passed in the panic
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,
 			"stack", string(debug.Stack()),

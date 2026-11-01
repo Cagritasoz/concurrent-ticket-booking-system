@@ -59,6 +59,7 @@ func TestNewLogger_TextFormat(t *testing.T) {
 
 // Table-driven: for each configured level, check which messages get through.
 func TestNewLogger_LevelFiltering(t *testing.T) {
+	// DEBUG  <  INFO  <  WARN  <  ERROR, debug sees all level logs, info sees info, warn, error and so on.
 	tests := []struct {
 		level string
 		want  []string // messages expected in the output, in order

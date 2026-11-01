@@ -1,4 +1,4 @@
-# Environment variables
+# 07 · Configuration
 
 The application is configured only through environment variables, read by `internal/config`.
 Every variable is optional. A variable that is not set, or is set to an empty value, uses its
@@ -24,7 +24,7 @@ A plain number without a unit (e.g. `15`) is invalid.
 
 | Variable | Default | Valid values | Meaning |
 |---|---|---|---|
-| `SHUTDOWN_TIMEOUT` | `20s` | duration > 0 | Maximum time in-flight requests get to finish after Ctrl+C / SIGTERM. |
+| `SHUTDOWN_TIMEOUT` | `20s` | duration > 0 | Maximum time in-flight requests get to finish after Ctrl+C / SIGTERM. Read and validated today; used once graceful shutdown exists (M0 step 5). |
 
 ## Logging
 

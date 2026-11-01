@@ -3,8 +3,9 @@
 ## Where we are
 
 - **Current milestone:** M0 Foundation, on branch `milestone/foundation`.
-- **Done:** steps 1–4 (entry point, config, logging, HTTP server with health checks and request IDs).
-- **Next:** step 5, graceful shutdown.
+- **Done:** steps 1–5 (entry point, config, logging, HTTP server with health checks and request
+  IDs, graceful shutdown).
+- **Next:** step 6, full endpoint and shutdown tests.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -32,13 +33,13 @@ Each milestone is developed on its own branch named `milestone/{milestone name}`
 | 2 | `internal/config`: environment variables → typed `Config`, defaults, validation reporting all errors at once; `.env.example`; [configuration doc](07-configuration.md) | `application.properties` + `@ConfigurationProperties` + `@Validated` | Done |
 | 3 | `internal/platform/telemetry`: `log/slog` logger, JSON or text, level filtering, passed explicitly (no global logger) | SLF4J + Logback | Done |
 | 4 | `internal/httpapi`: Gin router, request-ID / request-logging / recovery middleware, `/healthz` and `/readyz`; `http.Server` with timeouts | Spring MVC + Actuator liveness/readiness | Done |
-| 5 | Graceful shutdown on Ctrl+C / SIGTERM: mark not ready, let in-flight requests finish within `SHUTDOWN_TIMEOUT` | `server.shutdown=graceful` | Next |
-| 6 | Full endpoint tests with `net/http/httptest` (404, panic → 500) and a shutdown test (in-flight request finishes, `run` returns cleanly) | `MockMvc` + `@SpringBootTest(webEnvironment = RANDOM_PORT)` | Not started |
+| 5 | Graceful shutdown on Ctrl+C / SIGTERM: mark not ready, let in-flight requests finish within `SHUTDOWN_TIMEOUT` | `server.shutdown=graceful` | Done |
+| 6 | Full endpoint tests with `net/http/httptest` (404, panic → 500) and a shutdown test (in-flight request finishes, `run` returns cleanly) | `MockMvc` + `@SpringBootTest(webEnvironment = RANDOM_PORT)` | Next |
 | 7 | Makefile, golangci-lint config, GitHub Actions CI. (Untracking `.idea/` was done early.) | Maven/Gradle tasks + CI | Partly done |
 
 Tests are written within each step; step 6 adds the larger handler and shutdown tests.
 
-### What steps 1–4 delivered
+### What steps 1–5 delivered
 
 See [Application runtime](06-application-runtime.md) for how these pieces work together.
 
@@ -51,4 +52,7 @@ See [Application runtime](06-application-runtime.md) for how these pieces work t
 - **Step 4:** Gin in release mode with `gin.New()`, no trusted proxies; request IDs added to every
   log line written with the request's context; health endpoints; `http.Server` with all four
   timeouts, created after the listener is open and closed by a deferred `Close()`.
-  Graceful shutdown is not there yet: Ctrl+C currently kills the process.
+- **Step 5:** Ctrl+C / SIGTERM cancel the root context (`signal.NotifyContext`); `Serve` runs in a
+  goroutine and `run` waits with `select`; shutdown marks the app not ready, calls
+  `server.Shutdown` with `SHUTDOWN_TIMEOUT` and returns `nil`; a second Ctrl+C exits at once.
+  Tests: `run` returns `nil` after its context is cancelled, and fails when the port is taken.

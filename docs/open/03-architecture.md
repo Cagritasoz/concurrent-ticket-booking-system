@@ -7,7 +7,7 @@
 ```
 .
 ├── cmd/
-│   └── ticketing/main.go            # composition root: config → logger → router → listener → http.Server
+│   └── ticketing/main.go            # composition root: config → logger → router → listener → http.Server; graceful shutdown
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── platform/

@@ -24,7 +24,7 @@ A plain number without a unit (e.g. `15`) is invalid.
 
 | Variable | Default | Valid values | Meaning |
 |---|---|---|---|
-| `SHUTDOWN_TIMEOUT` | `20s` | duration > 0 | Maximum time in-flight requests get to finish after Ctrl+C / SIGTERM. Read and validated today; used once graceful shutdown exists (M0 step 5). |
+| `SHUTDOWN_TIMEOUT` | `20s` | duration > 0 | Maximum time in-flight requests get to finish after Ctrl+C / SIGTERM. If they are still running after it, the remaining connections are force-closed and the app exits with code 1. |
 
 ## Logging
 

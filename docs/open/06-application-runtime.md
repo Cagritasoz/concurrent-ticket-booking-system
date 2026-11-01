@@ -5,9 +5,10 @@ is marked as such.
 
 ## Startup
 
-The binary is `cmd/ticketing`. `main` creates the root `context.Context`, calls `run(ctx)` and
-exits with code 1 if `run` returns an error (the error is printed to stderr). `main` is the only
-place that calls `os.Exit`.
+The binary is `cmd/ticketing`. `main` creates the root `context.Context` with
+`signal.NotifyContext`, so the context is cancelled on Ctrl+C (`os.Interrupt`) or SIGTERM. It
+calls `run(ctx)` and exits with code 1 if `run` returns an error (the error is printed to stderr),
+or 0 after a clean shutdown. `main` is the only place that calls `os.Exit`.
 
 `run` is the composition root: it creates every part and connects them by hand, in this order:
 
@@ -20,14 +21,35 @@ place that calls `os.Exit`.
    here.
 6. **Server:** an `http.Server` with the router as its handler and all timeouts from config.
    A deferred `Close()` closes it (listener and open connections) on every way out of `run`.
-7. **Ready:** mark readiness as ready, log `http server listening`.
-8. **Serve:** `server.Serve(listener)` accepts connections, one goroutine per connection, and
-   blocks until the server stops.
+7. **Serve:** `server.Serve(listener)` runs in its own goroutine. It accepts connections, one
+   goroutine per connection, and sends its result to a channel when it stops.
+8. **Ready:** mark readiness as ready, log `http server listening`.
+9. **Wait:** `run` waits (`select`) for whichever comes first: the server stopping on its own,
+   which is an error, or the context being cancelled, which starts the shutdown.
 
-**Not yet implemented (M0 step 5):** graceful shutdown. Ctrl+C currently kills the process
-immediately, so in-flight requests are cut off and deferred cleanup does not run. Step 5 turns
-Ctrl+C / SIGTERM into a cancelled context: mark not ready, let in-flight requests finish within
-`SHUTDOWN_TIMEOUT`, then return from `run`.
+## Graceful shutdown
+
+On Ctrl+C or SIGTERM `run` logs `shutdown started` and then:
+
+1. **Marks the app not ready**, so `/readyz` answers 503.
+2. **Calls `server.Shutdown`** with a deadline of `SHUTDOWN_TIMEOUT` (default 20s). It stops
+   accepting new connections, closes idle ones, and waits for in-flight requests to finish.
+3. **Waits for `Serve` to return** `http.ErrServerClosed`, its normal way of ending after
+   `Shutdown`.
+4. Logs `shutdown complete` and returns `nil`, so the process exits with code 0.
+
+If requests are still running when the deadline passes, `run` returns an error (exit code 1) and
+the deferred `Close()` force-closes the remaining connections.
+
+After the first signal, signal handling is released: **a second Ctrl+C kills the process
+immediately**, for when you don't want to wait for the deadline.
+
+Notes:
+- `Shutdown` closes the listener at once, so marking the app not ready mainly matters for
+  requests already on open keep-alive connections. Behind a load balancer, a short pause between
+  "not ready" and `Shutdown` (so the balancer notices) can be added if a deployment needs it.
+- On Windows, Ctrl+C in the terminal triggers the shutdown. SIGTERM is what Linux containers
+  receive from Docker and Kubernetes.
 
 ## HTTP server
 
@@ -63,7 +85,7 @@ Unknown routes get Gin's default `404 page not found`.
 | Method | Path | Response | Purpose |
 |---|---|---|---|
 | GET | `/healthz` | `200 {"status":"ok"}` | **Liveness:** the process is alive. Always 200; it never checks dependencies, because restarting the app doesn't fix a database outage. |
-| GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open. From step 5 it reports not ready during shutdown, and from M1 when Postgres is unreachable. |
+| GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready again as soon as shutdown starts. From M1 also not ready when Postgres is unreachable. |
 
 ## Logging
 

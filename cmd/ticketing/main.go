@@ -47,7 +47,7 @@ func main() {
 	}
 }
 
-// run builds and starts the application, and shuts it down gracefully when ctx is canceled.
+// run builds the application and serves it until ctx is canceled, then shuts it down gracefully.
 // It returns an error instead of exiting, so it can be called from tests and so deferred cleanup
 // code always runs.
 func run(ctx context.Context) error {
@@ -64,7 +64,6 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("create logger: %w", err)
 	}
 
-	// Log selected fields only, never the whole config: later it will contain secrets.
 	logger.Info("starting ticketing",
 		"http_addr", cfg.HTTP.Addr,
 		"log_level", cfg.Log.Level,
@@ -85,12 +84,28 @@ func run(ctx context.Context) error {
 	// The server is created only after the port is open, so there is nothing to clean up if
 	// Listen fails. From here on, the deferred Close runs on every way out of run (like a
 	// try-with-resources block in Java): it closes the listener and any connections still open.
+	// run created the server, so run closes it.
 	server := newHTTPServer(cfg.HTTP, router, logger)
 	defer func() {
 		if err := server.Close(); err != nil {
 			logger.Error("close http server", "error", err)
 		}
 	}()
+
+	return serve(ctx, listener, server, readiness, cfg.ShutdownTimeout, logger)
+}
+
+// serve runs server on listener until ctx is canceled, then shuts it down gracefully.
+// It is separate from run so tests can call it with their own handler (for example a slow one)
+// and a listener whose address they know. The caller owns server and must Close it afterwards.
+func serve(
+	ctx context.Context,
+	listener net.Listener,
+	server *http.Server,
+	readiness *httpapi.Readiness,
+	shutdownTimeout time.Duration,
+	logger *slog.Logger,
+) error {
 
 	// Serve blocks until the server stops, so it runs in its own goroutine. That leaves run free
 	// to wait for whichever comes first: the server failing, or a shutdown request.
@@ -118,7 +133,7 @@ func run(ctx context.Context) error {
 		logger.Info("shutdown started") // receive and discard the value.
 	}
 
-	return shutdown(ctx, server, serveErr, readiness, cfg.ShutdownTimeout, logger)
+	return shutdown(ctx, server, serveErr, readiness, shutdownTimeout, logger)
 }
 
 // shutdown stops the server gracefully: it marks the app not ready, stops accepting new

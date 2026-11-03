@@ -18,7 +18,7 @@ milestone in which they will be settled.
 | 2026-10-20 | Test runs (local and CI) cover only the application code, `./cmd/... ./internal/...`. `examples/` is left untouched and its tests are run by hand only. |
 | 2026-10-20 | `.idea/` is not tracked by git. |
 | 2026-10-21 | Logs carry a request ID: a valid incoming `X-Request-ID` is reused, otherwise a UUID is generated. It is stored in the request context and added to every log line written with that context. |
-| 2026-10-31 | The `http.Server` is created only after the listener is open, and closed by a deferred `Close()` on every exit path of `run`. |
+| 2026-10-31 | The `http.Server` is created only after the listener is open, and closed by a deferred `Close()` on every exit path of `run`. Whoever creates a resource closes it; `serve` only uses the server it is given. |
 | 2026-11-01 | Graceful shutdown order: mark not ready → `server.Shutdown` within `SHUTDOWN_TIMEOUT` → force-close what's left and exit 1 if the deadline passes. A second Ctrl+C exits immediately. No pause between "not ready" and `Shutdown` until a deployment behind a load balancer needs one. |
 | 2026-11-01 | The system serves any kind of event (movie showings, concerts, festivals), seated and general admission alike. Every event is one dated occurrence at a venue; a movie shown 30 times is 30 events. |
 | 2026-11-01 | Ticket tiers (e.g. Standard, Pro, Ultimate) start with a name, a price and a description. The design must make two later additions easy without reworking bookings: **tier rules that are enforced** (e.g. sales windows, presale codes, access zones) and **multi-event passes** (one purchase covering tickets in several events). Neither is built until it is needed. |

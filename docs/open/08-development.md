@@ -51,7 +51,10 @@ On Windows PowerShell, set a variable for one run with `$env:LOG_FORMAT="text"; 
 - Table-driven tests with `t.Run` subtests are preferred for input/output cases.
 - Tests never read the real environment or write to the terminal: config tests pass a fake
   lookup function, logger tests write into a `bytes.Buffer`, HTTP tests use
-  `net/http/httptest` in memory.
+  `net/http/httptest` in memory. Tests that need a real server (startup and shutdown in
+  `cmd/ticketing`) listen on `127.0.0.1:0`, a free port chosen by the operating system.
+- Tests wait on channels instead of sleeping: a test handler signals when it has started and
+  blocks until the test releases it, so timing never decides the result.
 - Every test run uses `-race`.
 - Planned with the first integration tests (M1): unit tests run under `go test -short`;
   integration tests call `t.Skip` when `testing.Short()` is true and start one container per

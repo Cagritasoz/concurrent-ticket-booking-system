@@ -20,16 +20,19 @@ or 0 after a clean shutdown. `main` is the only place that calls `os.Exit`.
 5. **Listener:** `net.Listen("tcp", HTTP_ADDR)` opens the port. If the port is taken, `run` fails
    here.
 6. **Server:** an `http.Server` with the router as its handler and all timeouts from config.
-   A deferred `Close()` closes it (listener and open connections) on every way out of `run`.
+   A deferred `Close()` in `run` closes it (listener and open connections) on every way out.
+   `run` then hands the listener and server to `serve`, which does the remaining steps. (`serve`
+   is separate so tests can run it with their own handler; whoever creates the server closes
+   it.)
 7. **Serve:** `server.Serve(listener)` runs in its own goroutine. It accepts connections, one
    goroutine per connection, and sends its result to a channel when it stops.
 8. **Ready:** mark readiness as ready, log `http server listening`.
-9. **Wait:** `run` waits (`select`) for whichever comes first: the server stopping on its own,
+9. **Wait:** `serve` waits (`select`) for whichever comes first: the server stopping on its own,
    which is an error, or the context being cancelled, which starts the shutdown.
 
 ## Graceful shutdown
 
-On Ctrl+C or SIGTERM `run` logs `shutdown started` and then:
+On Ctrl+C or SIGTERM `serve` logs `shutdown started` and then:
 
 1. **Marks the app not ready**, so `/readyz` answers 503.
 2. **Calls `server.Shutdown`** with a deadline of `SHUTDOWN_TIMEOUT` (default 20s). It stops
@@ -38,8 +41,12 @@ On Ctrl+C or SIGTERM `run` logs `shutdown started` and then:
    `Shutdown`.
 4. Logs `shutdown complete` and returns `nil`, so the process exits with code 0.
 
-If requests are still running when the deadline passes, `run` returns an error (exit code 1) and
-the deferred `Close()` force-closes the remaining connections.
+If requests are still running when the deadline passes, `serve` (and so `run`) returns an error
+(exit code 1) and the deferred `Close()` force-closes the remaining connections.
+
+Both paths are covered by tests in `cmd/ticketing/main_test.go`: a request that is still running
+when shutdown starts gets its full response, and one that outlives the deadline is cut off with a
+deadline error.
 
 After the first signal, signal handling is released: **a second Ctrl+C kills the process
 immediately**, for when you don't want to wait for the deadline.

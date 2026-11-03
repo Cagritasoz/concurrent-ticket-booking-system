@@ -1,0 +1,3 @@
+# Go files are always LF, also on Windows with core.autocrlf=true. Otherwise switching branches
+# can turn them into CRLF, and gofmt (so also make lint) reports CRLF files as unformatted.
+*.go text eol=lf

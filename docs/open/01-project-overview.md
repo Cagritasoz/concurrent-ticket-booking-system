@@ -49,7 +49,7 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Metrics | Prometheus client | planned (M9) |
 | Testing | `testing` package, race detector; later Testcontainers, fuzzing, k6 load tests | partly in use |
 | Local infra | Docker Compose | in use (Redis for the examples) |
-| CI | GitHub Actions | planned (M0 step 7) |
+| CI | GitHub Actions | in use |
 | Gateway | Traefik, only if a real need appears | not planned |
 
 ## Requirements

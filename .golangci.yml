@@ -1,0 +1,27 @@
+# Configuration for golangci-lint v2. It runs through "make lint", locally and in CI.
+version: "2"
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose # an HTTP response body that is never closed
+    - errorlint # err == target where errors.Is is needed, because the error may be wrapped
+    - misspell # common spelling mistakes in comments and strings
+    - unconvert # type conversions that do nothing
+  exclusions:
+    paths:
+      - examples # early code, excluded intentionally.
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      # Keep this module's own imports in their own group, after the third-party ones.
+      local-prefixes:
+        - github.com/Cagritasoz/concurrent-ticket-booking-system
+  exclusions:
+    paths:
+      - examples

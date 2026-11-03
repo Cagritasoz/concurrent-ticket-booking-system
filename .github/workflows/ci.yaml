@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "milestone/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Install the Go version named in go.mod, so CI and go.mod can't disagree.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Same version as in docs/open/08-development.md. A new version can report new issues, so
+      # it is upgraded on purpose, not automatically.
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          args: ./cmd/... ./internal/...
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make build

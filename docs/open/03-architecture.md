@@ -16,6 +16,10 @@
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
 ├── docker-compose.yaml              # Redis + redis-commander (used by the examples)
+├── Makefile                         # short commands: make test, make lint, make check, ...
+├── .golangci.yml                    # golangci-lint configuration
+├── .github/workflows/ci.yaml        # GitHub Actions: lint, test, build
+├── .gitattributes                   # keeps Go files LF on Windows
 ├── .env.example                     # documented example configuration
 └── go.mod / go.sum
 ```
@@ -56,8 +60,9 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 ├── loadtest/                        # (planned, M9) k6 scripts
 ├── docs/open/                       # documentation
 ├── docker-compose.yaml
-├── Makefile                         # (planned, M0 step 7)
-└── .github/workflows/ci.yaml        # (planned, M0 step 7)
+├── Makefile
+├── .golangci.yml
+└── .github/workflows/ci.yaml
 ```
 
 ## Dependency rules

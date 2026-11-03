@@ -6,7 +6,7 @@
 |---|---|---|
 | Go 1.27 | build and test | |
 | A C compiler (`gcc`) | the race detector (`-race`) needs cgo, and cgo needs a C compiler | Windows: MSYS2, then `pacman -S mingw-w64-ucrt-x86_64-gcc` and add `C:\msys64\ucrt64\bin` to PATH. macOS: `xcode-select --install`. Linux: `build-essential`. |
-| GNU `make` | the Makefile (from M0 step 7) | Windows: `pacman -S make` in MSYS2 and add `C:\msys64\usr\bin` to the **end** of PATH (it contains Unix tools such as `find.exe` that would otherwise hide the Windows ones). |
+| GNU `make` | the Makefile | Windows: `pacman -S make` in MSYS2 and add `C:\msys64\usr\bin` to the **end** of PATH (it contains Unix tools such as `find.exe` that would otherwise hide the Windows ones). |
 | `golangci-lint` v2.15.0 | linting | Install the official binary into `$(go env GOPATH)/bin`, e.g. `curl -sSfL https://golangci-lint.run/install.sh \| sh -s -- -b "$(go env GOPATH)/bin" v2.15.0` (from a POSIX shell such as Git Bash). |
 | Docker Desktop | local infrastructure | Check with `docker ps`. |
 
@@ -24,16 +24,29 @@ See [07-configuration](07-configuration.md).
 ## Commands
 
 ```bash
-go run ./cmd/ticketing                              # start the app on :8080
-go build ./... && go vet ./...                      # build and vet everything
-go test -count=1 -race ./cmd/... ./internal/...     # the application's tests, race detector on
-golangci-lint run ./cmd/... ./internal/...          # lint
-docker compose up -d                                # Redis (6379) + redis-commander UI (8081), used by examples/
-go test -v -count=1 -race ./examples/booking/       # the example tests, by hand only (needs Redis running)
+make                # list the targets below
+make run            # start the app on :8080
+make build          # compile the app into bin/ (ignored by git)
+make test           # the application's tests, race detector on
+make lint           # golangci-lint, including go vet and format checks
+make fmt            # format the code
+make check          # lint and test, what to run before pushing
+make up             # Redis (6379) + redis-commander UI (8081), used by examples/
+make down           # stop them
+go test -v -count=1 -race ./examples/booking/   # the example tests, by hand only (needs Redis running)
 ```
 
-`-count=1` disables Go's test cache, so tests always really run. Make targets for these commands
-arrive in M0 step 7.
+`make test` uses `-count=1`, which disables Go's test cache, so tests always really run. Linter
+settings are in `.golangci.yml`. Lint reports one issue per line, so a format problem can stay
+hidden until another issue on the same line is fixed.
+
+## Continuous integration
+
+`.github/workflows/ci.yaml` runs on GitHub Actions for every push to `main` or a `milestone/**`
+branch and for pull requests into `main`. It installs the Go version from `go.mod`, then runs lint,
+`make test` and `make build`; `make check` covers the lint and test parts locally. `examples/` is
+not part of CI. Its golangci-lint version is pinned, so when upgrading, change it in the workflow
+and in the prerequisites above together.
 
 Try the endpoints while the app runs:
 

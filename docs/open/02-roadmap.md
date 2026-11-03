@@ -3,9 +3,10 @@
 ## Where we are
 
 - **Current milestone:** M0 Foundation, on branch `milestone/foundation`.
-- **Done:** steps 1–6 (entry point, config, logging, HTTP server with health checks and request
-  IDs, graceful shutdown, endpoint and shutdown tests).
-- **Next:** step 7, Makefile, golangci-lint config and GitHub Actions CI.
+- **Done:** steps 1–7 (entry point, config, logging, HTTP server with health checks and request
+  IDs, graceful shutdown, endpoint and shutdown tests, Makefile, lint config and CI workflow).
+- **Next:** push and confirm the first CI run is green, which is the last proof M0 needs. Then M1
+  on its own branch.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -35,11 +36,11 @@ Each milestone is developed on its own branch named `milestone/{milestone name}`
 | 4 | `internal/httpapi`: Gin router, request-ID / request-logging / recovery middleware, `/healthz` and `/readyz`; `http.Server` with timeouts | Spring MVC + Actuator liveness/readiness | Done |
 | 5 | Graceful shutdown on Ctrl+C / SIGTERM: mark not ready, let in-flight requests finish within `SHUTDOWN_TIMEOUT` | `server.shutdown=graceful` | Done |
 | 6 | Full endpoint tests with `net/http/httptest` (404, panic → 500) and a shutdown test (in-flight request finishes, `run` returns cleanly) | `MockMvc` + `@SpringBootTest(webEnvironment = RANDOM_PORT)` | Done |
-| 7 | Makefile, golangci-lint config, GitHub Actions CI. (Untracking `.idea/` was done early.) | Maven/Gradle tasks + CI | Next (partly done) |
+| 7 | Makefile, golangci-lint config, GitHub Actions CI. (Untracking `.idea/` was done early.) | Maven/Gradle tasks + CI | Done (first CI run pending) |
 
 Tests are written within each step; step 6 added the larger handler and shutdown tests.
 
-### What steps 1–6 delivered
+### What steps 1–7 delivered
 
 See [Application runtime](06-application-runtime.md) for how these pieces work together.
 
@@ -62,3 +63,8 @@ See [Application runtime](06-application-runtime.md) for how these pieces work t
   request that outlives `SHUTDOWN_TIMEOUT` is force-closed and `serve` returns a deadline error.
   Router tests: an unknown route gives 404 and is logged as WARN; a panicking handler gives a
   generic 500, is logged with its value and stack, and the server keeps working.
+- **Step 7:** `Makefile` (`run`, `build`, `test`, `lint`, `fmt`, `check`, `up`, `down`);
+  `.golangci.yml` (standard linters plus `bodyclose`, `errorlint`, `misspell`, `unconvert`, and
+  the `gofmt` and `goimports` formatters); `.github/workflows/ci.yaml` (lint, test with `-race`
+  and build on pushes to `main` and milestone branches and on pull requests into `main`);
+  `.gitattributes` keeps Go files LF.

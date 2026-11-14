@@ -40,7 +40,7 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Language | Go 1.27, module `github.com/Cagritasoz/concurrent-ticket-booking-system` | in use |
 | HTTP | Gin v1.12.0, only inside the HTTP layer | in use |
 | Logging | `log/slog` (standard library), JSON to stdout | in use |
-| Database | PostgreSQL via pgx + sqlc (type-safe Go generated from SQL) | planned (M1) |
+| Database | PostgreSQL 17 via pgx + sqlc (type-safe Go generated from SQL) | pgx connection pool in use; sqlc planned (M1) |
 | Migrations | golang-migrate | planned (M1) |
 | Auth | Keycloak via OIDC (coreos/go-oidc); never a custom identity provider | planned (M2) |
 | Holds / cache | Redis (`SET NX` with expiry), never the only correctness mechanism | planned (M5) |
@@ -48,7 +48,7 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Search | Elasticsearch (official go-elasticsearch client) | planned (M8) |
 | Metrics | Prometheus client | planned (M9) |
 | Testing | `testing` package, race detector; later Testcontainers, fuzzing, k6 load tests | partly in use |
-| Local infra | Docker Compose | in use (Redis for the examples) |
+| Local infra | Docker Compose | in use (Postgres; Redis for the examples) |
 | CI | GitHub Actions | in use |
 | Gateway | Traefik, only if a real need appears | not planned |
 

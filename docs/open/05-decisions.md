@@ -28,11 +28,17 @@ milestone in which they will be settled.
 | 2026-11-01 | **Per-customer limits are enforced** with a counter row per (customer, tier), updated in the same transaction as the booking, with a database `CHECK (count <= limit)`. Two parallel requests from the same customer can't both slip under the limit, and the rows are per customer, so they don't become hot rows. |
 | 2026-11-03 | CI runs lint, tests with `-race` and a build on GitHub Actions, on pushes to `main` and `milestone/**` and on pull requests into `main`. The `golangci-lint` version is pinned (v2.15.0, the same as locally) and upgraded on purpose, because a new version can report new issues. |
 | 2026-11-03 | Go files are always LF (`.gitattributes`). With `core.autocrlf=true`, switching branches on Windows could otherwise turn them into CRLF, which gofmt and so `make lint` report as unformatted. |
+| 2026-11-03 | Postgres runs as `postgres:17.11-alpine`, with an exact version pin. Credentials in Compose are `${...}` placeholders filled from `.env`, and a `pg_isready` health check reports when it accepts connections. |
+| 2026-11-03 | `DATABASE_URL` is required and has no default, because it contains a password. The app connects at startup and stops if it can't reach Postgres. |
+| 2026-11-03 | The connection pool uses pgx's default settings. Pool settings are added around the M9 load tests, when there are numbers to base them on; until then, `pool_max_conns` can be set in the URL. |
 
 ## Open
 
 | Settle in | Topic | Recommendation |
 |---|---|---|
+| M1 step 2 | **When migrations run** | By an explicit command (`make migrate-up`), not at app startup, so several starting instances can't race and a bad migration doesn't stop the app from booting by surprise. |
+| M1 step 9 | **When tickets are created** | At publish, in one transaction. Tiers stay freely editable while the event is a draft, with no ticket rows to keep in sync. |
+| M1 step 10 | **What can change after publishing** | Only descriptive text (names, descriptions). Prices, quantities, seats and the date stay fixed; changing them means cancelling the event and creating a new one. |
 | M3 | **Hold duration and anti-hoarding** | A short configurable hold time (around 10 minutes), at most one open booking per event per customer, and rate limiting on `POST /bookings`, on top of the per-customer limits. Details in [10 · System flows](10-system-flows.md#a-user-who-keeps-blocking-tickets). |
 | M7 | **Customer-initiated refunds** | Not decided: whether customers may request refunds, and until when. Event cancellation always refunds. |
 | M7 | **Late payment on an expired booking** | Pause expiry while a payment is processing. On a late success, reclaim the same tickets if they are still free, otherwise refund automatically. A possible later upgrade is Stripe authorize-then-capture (`capture_method=manual`). "Always refund" was rejected as needlessly unfriendly. |

@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,10 +17,25 @@ import (
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/telemetry"
 )
 
-// newTestRouter builds a router whose logs are thrown away (io.Discard), so test output stays clean.
+// fakeDatabase is a Pinger for tests. Ping returns err (nil means the database is healthy) and
+// records how it was called.
+type fakeDatabase struct {
+	err         error
+	pings       int
+	hadDeadline bool
+}
+
+func (f *fakeDatabase) Ping(ctx context.Context) error {
+	f.pings++
+	_, f.hadDeadline = ctx.Deadline()
+	return f.err
+}
+
+// newTestRouter builds a router with a healthy fake database, whose logs are thrown away
+// (io.Discard), so test output stays clean.
 func newTestRouter(readiness *Readiness) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, readiness)
+	return NewRouter(logger, readiness, &fakeDatabase{})
 }
 
 // get sends a GET request to handler in memory, without opening a real port, and returns the
@@ -61,6 +78,81 @@ func TestReadyz_FollowsReadiness(t *testing.T) {
 	}
 }
 
+func TestReadyz_ChecksTheDatabaseWithATimeout(t *testing.T) {
+	readiness := &Readiness{}
+	readiness.SetReady(true)
+	database := &fakeDatabase{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	rec := get(t, NewRouter(logger, readiness, database), "/readyz")
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	if database.pings != 1 {
+		t.Errorf("pings: got %d, want 1", database.pings)
+	}
+	if !database.hadDeadline {
+		t.Error("Ping was called without a deadline, so a hanging database would hang /readyz")
+	}
+}
+
+func TestReadyz_NotReadyWhenTheDatabaseFails(t *testing.T) {
+	readiness := &Readiness{}
+	readiness.SetReady(true)
+	var logs bytes.Buffer
+	logger, err := telemetry.NewLogger("debug", "json", &logs)
+	if err != nil {
+		t.Fatalf("NewLogger: unexpected error: %v", err)
+	}
+	database := &fakeDatabase{err: errors.New("connection refused")}
+
+	rec := get(t, NewRouter(logger, readiness, database), "/readyz")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status: got %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	// The client gets a generic answer; the reason only goes to the logs.
+	if want := `{"status":"not ready"}`; rec.Body.String() != want {
+		t.Errorf("body: got %s, want %s", rec.Body.String(), want)
+	}
+	if entry := findLog(t, logs.String(), "readiness check failed"); entry.Level != "WARN" {
+		t.Errorf("log level: got %s, want WARN", entry.Level)
+	}
+	if !strings.Contains(logs.String(), "connection refused") {
+		t.Errorf("logs don't contain the reason:\n%s", logs.String())
+	}
+}
+
+func TestReadyz_SkipsTheDatabaseWhileNotReady(t *testing.T) {
+	database := &fakeDatabase{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	rec := get(t, NewRouter(logger, &Readiness{}, database), "/readyz")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status: got %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if database.pings != 0 {
+		t.Errorf("pings: got %d, want 0", database.pings)
+	}
+}
+
+// Liveness must not depend on the database: restarting the app doesn't fix a database outage.
+func TestHealthz_IgnoresTheDatabase(t *testing.T) {
+	database := &fakeDatabase{err: errors.New("connection refused")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	rec := get(t, NewRouter(logger, &Readiness{}, database), "/healthz")
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	if database.pings != 0 {
+		t.Errorf("pings: got %d, want 0", database.pings)
+	}
+}
+
 // newLoggingRouter builds a router whose logs are written into logs as JSON lines, so a test can
 // check what was logged.
 func newLoggingRouter(t *testing.T, logs *bytes.Buffer) *gin.Engine {
@@ -69,7 +161,7 @@ func newLoggingRouter(t *testing.T, logs *bytes.Buffer) *gin.Engine {
 	if err != nil {
 		t.Fatalf("NewLogger: unexpected error: %v", err)
 	}
-	return NewRouter(logger, &Readiness{})
+	return NewRouter(logger, &Readiness{}, &fakeDatabase{})
 }
 
 // logEntry is one parsed JSON log line; only the fields the tests check are listed.

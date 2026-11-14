@@ -19,6 +19,7 @@ import (
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/config"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/telemetry"
 )
 
@@ -69,8 +70,22 @@ func run(ctx context.Context) error {
 		"log_level", cfg.Log.Level,
 		"log_format", cfg.Log.Format,
 	)
+
+	// Connect before opening the port, so the app never accepts requests it can't serve.
+	// Deferred calls run in reverse order, so the pool closes after the HTTP server further down:
+	// requests that are still finishing can use it until the end.
+	pool, err := postgres.NewPool(ctx, cfg.Database.URL)
+	if err != nil {
+		return fmt.Errorf("connect to postgres: %w", err)
+	}
+	defer pool.Close()
+	logger.Info("connected to postgres",
+		"host", pool.Config().ConnConfig.Host,
+		"database", pool.Config().ConnConfig.Database,
+	)
+
 	readiness := &httpapi.Readiness{} // Set to false as its zero value.
-	router := httpapi.NewRouter(logger, readiness)
+	router := httpapi.NewRouter(logger, readiness, pool)
 
 	// Open the port first, then mark the app ready: /readyz only says "ready" once we can
 	// actually accept connections.
@@ -172,7 +187,7 @@ func shutdown(
 	return nil
 }
 
-// newHTTPServer wraps the router in a standard http.Server with timeouts.
+// newHTTPServer wraps the router in a standard http.Server with timeouts, if gin was not used we could have used a mux as router.
 //
 // Gin's own router.Run() starts a server with no timeouts at all, so one slow or malicious
 // client could hold a connection (and its goroutine) open forever. Each timeout below limits

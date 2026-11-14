@@ -16,10 +16,20 @@ C compiler on PATH and turned cgo off. Install one, open a new terminal, and if
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust it; `.env` is ignored by git. The app reads only real
-environment variables, so pass the file to the process (e.g. with an IDE .env plugin) or set
-variables inline. Every variable has a default, so the app also runs with none set.
+Copy `.env.example` to `.env` and adjust it; `.env` is ignored by git. Docker Compose reads the file
+on its own, so `make up` and `make down` need it. The app reads only real environment variables, so
+pass the file to the process (e.g. with an IDE .env plugin) or set variables inline. `make run` and
+`go run` don't load it, and the app needs at least `DATABASE_URL`.
 See [07-configuration](07-configuration.md).
+
+## Running the app
+
+1. `make up` starts Postgres and waits until it is healthy.
+2. Start the app from the IDE with the .env plugin, or set `DATABASE_URL` first:
+
+```powershell
+$env:DATABASE_URL="postgres://user:password@localhost:5432/database?sslmode=disable"; make run
+```
 
 ## Commands
 
@@ -31,20 +41,26 @@ make test           # the application's tests, race detector on
 make lint           # golangci-lint, including go vet and format checks
 make fmt            # format the code
 make check          # lint and test, what to run before pushing
-make up             # Redis (6379) + redis-commander UI (8081), used by examples/
-make down           # stop them
-go test -v -count=1 -race ./examples/booking/   # the example tests, by hand only (needs Redis running)
+make up             # Postgres (5432), waits until it is healthy
+make down           # stop all Compose containers; the Postgres data stays in a Docker volume
+
+# examples/ only, by hand: Redis (6379) + redis-commander UI (8081), then the example tests
+docker compose up -d redis redis-commander
+go test -v -count=1 -race ./examples/booking/
 ```
 
-`make test` uses `-count=1`, which disables Go's test cache, so tests always really run. Linter
+`make test` uses `-count=1`, which disables Go's test cache, so tests always really run. Tests that
+need a real Postgres are skipped unless `TEST_DATABASE_URL` is set. To include them, start Postgres
+and run `$env:TEST_DATABASE_URL="<your DATABASE_URL>"; make test`. Linter
 settings are in `.golangci.yml`. Lint reports one issue per line, so a format problem can stay
 hidden until another issue on the same line is fixed.
 
 ## Continuous integration
 
 `.github/workflows/ci.yaml` runs on GitHub Actions for every push to `main` or a `milestone/**`
-branch and for pull requests into `main`. It installs the Go version from `go.mod`, then runs lint,
-`make test` and `make build`; `make check` covers the lint and test parts locally. `examples/` is
+branch and for pull requests into `main`. It starts a throwaway Postgres, installs the Go version
+from `go.mod`, then runs lint, `make test` and `make build`; `make check` covers the lint and test
+parts locally. `examples/` is
 not part of CI. Its golangci-lint version is pinned, so when upgrading, change it in the workflow
 and in the prerequisites above together.
 
@@ -56,7 +72,8 @@ curl -i http://localhost:8080/readyz
 curl -i -H "X-Request-ID: my-trace-42" http://localhost:8080/healthz
 ```
 
-On Windows PowerShell, set a variable for one run with `$env:LOG_FORMAT="text"; go run ./cmd/ticketing`.
+On Windows PowerShell, `$env:LOG_FORMAT="text"` sets a variable for that terminal session, so it also
+applies to later commands there.
 
 ## Testing conventions
 
@@ -67,7 +84,8 @@ On Windows PowerShell, set a variable for one run with `$env:LOG_FORMAT="text"; 
   `net/http/httptest` in memory. Tests that need a real server (startup and shutdown in
   `cmd/ticketing`) listen on `127.0.0.1:0`, a free port chosen by the operating system.
 - Tests wait on channels instead of sleeping: a test handler signals when it has started and
-  blocks until the test releases it, so timing never decides the result.
+  blocks until the test releases it, so timing never decides the result. The exception is waiting
+  for the whole app to start, where a test polls `/readyz`, with a time limit.
 - Every test run uses `-race`.
 - Planned with the first integration tests (M1): unit tests run under `go test -short`;
   integration tests call `t.Skip` when `testing.Short()` is true and start one container per

@@ -20,8 +20,8 @@ help:
 	@echo "make lint    run golangci-lint (includes go vet and format checks)"
 	@echo "make fmt     format the code"
 	@echo "make check   lint and test, what CI runs"
-	@echo "make up      start Redis and redis-commander in Docker"
-	@echo "make down    stop them"
+	@echo "make up      start Postgres in Docker (needs .env)"
+	@echo "make down    stop all Compose containers (the data stays)"
 
 run:
 	go run ./cmd/ticketing
@@ -41,8 +41,10 @@ fmt:
 
 check: lint test
 
+# Only Postgres: Redis and redis-commander are just for examples/.
+# --wait returns only when Postgres passes its health check.
 up:
-	docker compose up -d
+	docker compose up postgres -d --wait
 
 down:
 	docker compose down

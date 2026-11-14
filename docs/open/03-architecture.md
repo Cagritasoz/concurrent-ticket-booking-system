@@ -7,15 +7,16 @@
 ```
 .
 ├── cmd/
-│   └── ticketing/main.go            # composition root: config → logger → router → listener → http.Server; graceful shutdown
+│   └── ticketing/main.go            # composition root: config → logger → Postgres pool → router → listener → http.Server; graceful shutdown
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── platform/
+│   │   ├── postgres/                # connection pool setup (pgxpool)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
 │   └── httpapi/                     # Gin router, middleware, health handlers, Readiness
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
-├── docker-compose.yaml              # Redis + redis-commander (used by the examples)
+├── docker-compose.yaml              # Postgres; Redis + redis-commander (used by the examples)
 ├── Makefile                         # short commands: make test, make lint, make check, ...
 ├── .golangci.yml                    # golangci-lint configuration
 ├── .github/workflows/ci.yaml        # GitHub Actions: lint, test, build
@@ -35,7 +36,7 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 ├── internal/
 │   ├── config/                      # env vars → typed Config + Validate()
 │   ├── platform/                    # infrastructure client setup ONLY, no business rules
-│   │   ├── postgres/                # (planned, M1) pgxpool, WithTx helper, pg error mapping (23505 → domain error)
+│   │   ├── postgres/                # pgxpool; (planned, M1) WithTx helper, pg error mapping (23505 → domain error)
 │   │   │   └── pgtest/              # (planned, M1) Testcontainers Postgres + migrations for integration tests
 │   │   ├── redis/                   # (planned, M5) client constructor (returns an error, never exits)
 │   │   ├── elastic/                 # (planned, M8) client constructor

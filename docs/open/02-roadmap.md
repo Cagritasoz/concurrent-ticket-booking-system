@@ -2,11 +2,12 @@
 
 ## Where we are
 
-- **Current milestone:** M0 Foundation, on branch `milestone/foundation`.
-- **Done:** steps 1–7 (entry point, config, logging, HTTP server with health checks and request
-  IDs, graceful shutdown, endpoint and shutdown tests, Makefile, lint config and CI workflow).
-- **Next:** push and confirm the first CI run is green, which is the last proof M0 needs. Then M1
-  on its own branch.
+- **Current milestone:** M1 Postgres + Event, on branch `milestone/postgres-event`.
+- **Finished:** M0 Foundation, merged into `main` with CI green (entry point, config, logging,
+  HTTP server with health checks and request IDs, graceful shutdown, endpoint and shutdown tests,
+  Makefile, lint config and CI workflow).
+- **Done in M1:** step 1 (Postgres in Docker Compose, connection pool, `/readyz` checks Postgres).
+- **Next:** M1 step 2, migrations and the first table.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -15,8 +16,8 @@ Each milestone is developed on its own branch named `milestone/{milestone name}`
 
 | M | Name | Scope | Proof it's done | Status |
 |---|---|---|---|---|
-| 0 | Foundation | Entry point, config, logging, HTTP server, health checks, graceful shutdown, tooling and CI (see steps below) | Handler tests, shutdown test, CI green | In progress |
-| 1 | Postgres + Event | Postgres in Compose, golang-migrate, sqlc, a shared test harness for Postgres; venues (optional seat layouts), events, ticket tiers, tickets (seated and general admission); admin CRUD; publish and cancel rules | Integration tests against real Postgres, domain unit tests | Not started |
+| 0 | Foundation | Entry point, config, logging, HTTP server, health checks, graceful shutdown, tooling and CI (see steps below) | Handler tests, shutdown test, CI green | Done |
+| 1 | Postgres + Event | Postgres in Compose, golang-migrate, sqlc, a shared test harness for Postgres; venues (optional seat layouts), events, ticket tiers, tickets (seated and general admission); admin CRUD; publish and cancel rules | Integration tests against real Postgres, domain unit tests | In progress |
 | 2 | Auth | Keycloak realm in Compose, OIDC middleware, `Principal`, customer and event-admin roles, ownership checks | Tests with a test key set: bad signature, issuer, audience, expiry, missing role, another user's resource; one Keycloak container test | Not started |
 | 3 | Booking core | Bookings, the "one active booking per ticket" index, the booking state machine, seat selection (pick seats or a general-admission quantity), per-customer limits per tier, expiry sweeper, `POST /bookings`; the concurrent booking test ported to Postgres | Exactly one winner per ticket (including 1,000 concurrent users booking the same seat), expiry frees seats, multi-ticket bookings are all-or-nothing, deadlock-free ordering, parallel requests can't exceed a customer limit | Not started |
 | 4 | Idempotency | `Idempotency-Key` header, request hash, response replay | Concurrent duplicates, payload mismatch, rollback on crash, fuzzed request canonicalization | Not started |
@@ -36,7 +37,7 @@ Each milestone is developed on its own branch named `milestone/{milestone name}`
 | 4 | `internal/httpapi`: Gin router, request-ID / request-logging / recovery middleware, `/healthz` and `/readyz`; `http.Server` with timeouts | Spring MVC + Actuator liveness/readiness | Done |
 | 5 | Graceful shutdown on Ctrl+C / SIGTERM: mark not ready, let in-flight requests finish within `SHUTDOWN_TIMEOUT` | `server.shutdown=graceful` | Done |
 | 6 | Full endpoint tests with `net/http/httptest` (404, panic → 500) and a shutdown test (in-flight request finishes, `run` returns cleanly) | `MockMvc` + `@SpringBootTest(webEnvironment = RANDOM_PORT)` | Done |
-| 7 | Makefile, golangci-lint config, GitHub Actions CI. (Untracking `.idea/` was done early.) | Maven/Gradle tasks + CI | Done (first CI run pending) |
+| 7 | Makefile, golangci-lint config, GitHub Actions CI. (Untracking `.idea/` was done early.) | Maven/Gradle tasks + CI | Done |
 
 Tests are written within each step; step 6 added the larger handler and shutdown tests.
 
@@ -68,3 +69,54 @@ See [Application runtime](06-application-runtime.md) for how these pieces work t
   the `gofmt` and `goimports` formatters); `.github/workflows/ci.yaml` (lint, test with `-race`
   and build on pushes to `main` and milestone branches and on pull requests into `main`);
   `.gitattributes` keeps Go files LF.
+
+## M1 Postgres + Event steps
+
+M1 gives the app a database and the admin side of the system: an admin can describe a venue, create
+an event with ticket tiers, and publish it, which creates the tickets that M3 will sell. The first
+REST endpoints arrive in step 5; steps 1–4 build what they stand on. Every step includes its tests.
+
+| Step | What | Spring Boot equivalent | Status |
+|---|---|---|---|
+| 1 | Postgres in Docker Compose; `DATABASE_URL` in config and `.env.example`; connection pool in `internal/platform/postgres`; `/readyz` also checks Postgres; the pool closes on shutdown | `spring.datasource.*` + HikariCP + Actuator DB health | Done |
+| 2 | golang-migrate: a `migrations/` folder, `make migrate-up` and `make migrate-down`, the first table (`venues`) | Flyway | Next |
+| 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Not started |
+| 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; Postgres errors mapped to domain errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Not started |
+| 5 | **First REST endpoints:** venue service and CRUD handlers under `/api/v1/admin`; request validation; one JSON error format; domain error → HTTP status mapping | `@RestController` + Bean Validation + `@ControllerAdvice` | Not started |
+| 6 | Seat layouts: a venue's optional seats (section, row, number) | Child entity + nested endpoints | Not started |
+| 7 | Events: CRUD for draft events; an event is one dated occurrence at a venue | Another `@RestController` + service | Not started |
+| 8 | Ticket tiers: name, price (integer minor units + currency), description, and either a quantity (general admission) or a set of seats (seated) | Child entity + validation rules | Not started |
+| 9 | Publish: a pure Go status table, a conditional status update, and ticket generation (one row per sellable unit) in one transaction | Enum state machine + `@Transactional` service method | Not started |
+| 10 | Cancel and edit rules: what can change after publishing, enforced with locks so inventory can't be removed underneath customers (invariant I14) | Domain rules + pessimistic locking | Not started |
+| 11 | Close M1: API reference in `docs/open`, an end-to-end test (venue → event → tiers → publish → tickets exist), CI green | springdoc / REST docs + `@SpringBootTest` | Not started |
+
+### What M1 has delivered so far
+
+- **Step 1:** `postgres:17.11-alpine` in Compose with `${...}` credentials and a `pg_isready` health
+  check; `DATABASE_URL` is required and never printed; `postgres.NewPool` uses pgx's default pool
+  settings and pings at startup, so a bad connection stops the app; `/readyz` pings the database
+  with a 2s limit, `/healthz` doesn't touch it. Tests that need a real database use
+  `TEST_DATABASE_URL`: CI provides a Postgres, and locally they are skipped when it isn't set, until
+  step 3 replaces this with Testcontainers.
+
+### Planned M1 endpoints
+
+Paths are under `/api/v1/admin`. They are a plan and can change when each step is built.
+
+| Step | Method and path | Action |
+|---|---|---|
+| 5 | `POST /venues`, `GET /venues`, `GET /venues/{id}`, `PATCH /venues/{id}`, `DELETE /venues/{id}` | Manage venues |
+| 6 | `PUT /venues/{id}/seats`, `GET /venues/{id}/seats` | Set and read a venue's seat layout |
+| 7 | `POST /events`, `GET /events`, `GET /events/{id}`, `PATCH /events/{id}`, `DELETE /events/{id}` | Manage events; only drafts can be deleted |
+| 8 | `POST /events/{id}/tiers`, `GET /events/{id}/tiers`, `PATCH /tiers/{id}`, `DELETE /tiers/{id}` | Manage an event's ticket tiers |
+| 9 | `POST /events/{id}/publish`, `GET /events/{id}/tickets` | Publish an event and list its tickets |
+| 10 | `POST /events/{id}/cancel` | Cancel an event |
+
+### What M1 leaves out
+
+- **Login and permissions (M2):** the admin endpoints have no authentication during M1, so the app
+  must not be deployed publicly until M2 is done. The `/api/v1/admin` route group gives M2 one
+  place to add it.
+- **Customer endpoints:** booking comes in M3, and search in M8. Customer read endpoints for
+  events and availability are added in M3, when availability exists.
+- **Refunds (M7):** cancelling an event in M1 only changes its status, because no bookings exist yet.

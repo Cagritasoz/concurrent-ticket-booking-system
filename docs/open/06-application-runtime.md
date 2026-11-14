@@ -16,18 +16,22 @@ or 0 after a clean shutdown. `main` is the only place that calls `os.Exit`.
    ([07-configuration](07-configuration.md)). Invalid values stop startup with all problems listed.
 2. **Logger:** `telemetry.NewLogger(level, format, os.Stdout)`.
 3. Log `starting ticketing` with selected config fields (never the whole config).
-4. **Readiness and router:** a `httpapi.Readiness` (starts as not ready) and `httpapi.NewRouter`.
-5. **Listener:** `net.Listen("tcp", HTTP_ADDR)` opens the port. If the port is taken, `run` fails
+4. **Postgres:** `postgres.NewPool` creates the connection pool and pings the database, allowing
+   5 seconds. If it can't connect, `run` fails here, before the port is opened. A deferred `Close()`
+   closes the pool last, after the HTTP server. Then it logs `connected to postgres`.
+5. **Readiness and router:** a `httpapi.Readiness` (starts as not ready) and `httpapi.NewRouter`,
+   which also gets the pool for the `/readyz` check.
+6. **Listener:** `net.Listen("tcp", HTTP_ADDR)` opens the port. If the port is taken, `run` fails
    here.
-6. **Server:** an `http.Server` with the router as its handler and all timeouts from config.
+7. **Server:** an `http.Server` with the router as its handler and all timeouts from config.
    A deferred `Close()` in `run` closes it (listener and open connections) on every way out.
    `run` then hands the listener and server to `serve`, which does the remaining steps. (`serve`
    is separate so tests can run it with their own handler; whoever creates the server closes
    it.)
-7. **Serve:** `server.Serve(listener)` runs in its own goroutine. It accepts connections, one
+8. **Serve:** `server.Serve(listener)` runs in its own goroutine. It accepts connections, one
    goroutine per connection, and sends its result to a channel when it stops.
-8. **Ready:** mark readiness as ready, log `http server listening`.
-9. **Wait:** `serve` waits (`select`) for whichever comes first: the server stopping on its own,
+9. **Ready:** mark readiness as ready, log `http server listening`.
+10. **Wait:** `serve` waits (`select`) for whichever comes first: the server stopping on its own,
    which is an error, or the context being cancelled, which starts the shutdown.
 
 ## Graceful shutdown
@@ -57,6 +61,18 @@ Notes:
   "not ready" and `Shutdown` (so the balancer notices) can be added if a deployment needs it.
 - On Windows, Ctrl+C in the terminal triggers the shutdown. SIGTERM is what Linux containers
   receive from Docker and Kubernetes.
+
+## Database
+
+`internal/platform/postgres` creates a `pgxpool.Pool`, the Hikari equivalent. Nothing creates it
+automatically: `run` builds it, passes it to whatever needs it, and closes it.
+
+The pool uses pgx's defaults: at most 4 connections or the CPU count if that is larger, no minimum,
+a 1-hour connection lifetime and a 30-minute idle timeout. `pool_max_conns` and similar settings can
+be added to `DATABASE_URL` without code.
+
+Unlike Hikari's `connectionTimeout`, the pool has no setting for how long to wait for a free
+connection: a query waits until its `context` is cancelled or times out.
 
 ## HTTP server
 
@@ -92,7 +108,7 @@ Unknown routes get Gin's default `404 page not found`.
 | Method | Path | Response | Purpose |
 |---|---|---|---|
 | GET | `/healthz` | `200 {"status":"ok"}` | **Liveness:** the process is alive. Always 200; it never checks dependencies, because restarting the app doesn't fix a database outage. |
-| GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready again as soon as shutdown starts. From M1 also not ready when Postgres is unreachable. |
+| GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready as soon as shutdown starts, or while Postgres doesn't answer a ping within 2 seconds. The reason is logged as `readiness check failed`, never sent to the client. It recovers by itself when Postgres returns. |
 
 ## Logging
 
@@ -110,6 +126,7 @@ Example output:
 
 ```json
 {"time":"…","level":"INFO","msg":"starting ticketing","http_addr":":8080","log_level":"info","log_format":"json"}
+{"time":"…","level":"INFO","msg":"connected to postgres","host":"localhost","database":"ticketing"}
 {"time":"…","level":"INFO","msg":"http server listening","addr":"[::]:8080"}
 {"time":"…","level":"WARN","msg":"http request","method":"GET","path":"/nope","status":404,"duration_ms":0,"client_ip":"::1","request_id":"e9ad819b-a0d8-4eb2-9808-5c1c2432f07d"}
 ```

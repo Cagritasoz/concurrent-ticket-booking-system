@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,13 +19,68 @@ import (
 // this test only and restores the old value afterwards. Port 0 asks the operating system for any
 // free port, so the tests never clash with an app already running on 8080.
 
+// requireDatabase points run at a real Postgres. The test is skipped unless TEST_DATABASE_URL is
+// set; CI sets it. M1 step 3 replaces this with a Postgres that the tests start themselves.
+func requireDatabase(t *testing.T) {
+	t.Helper()
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	t.Setenv("DATABASE_URL", databaseURL)
+}
+
+// closedAddr returns an address on this machine where nothing is listening.
+func closedAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return addr
+}
+
+// waitUntilReady polls /readyz until it answers 200.
+func waitUntilReady(t *testing.T, addr string, done <-chan error) {
+	t.Helper()
+	client := &http.Client{Timeout: time.Second}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("run stopped before it was ready: %v", err)
+		default:
+		}
+
+		resp, err := client.Get("http://" + addr + "/readyz")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("/readyz did not answer 200 within 10s")
+}
+
 func TestRun_ReturnsNilAfterShutdown(t *testing.T) {
-	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	requireDatabase(t)
+	addr := closedAddr(t)
+	t.Setenv("HTTP_ADDR", addr)
 	t.Setenv("LOG_LEVEL", "error") // keep the test output quiet
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- run(ctx) }()
+
+	// The whole app is up: connected to Postgres, listening and answering requests.
+	waitUntilReady(t, addr, done)
 
 	cancel() // what Ctrl+C does in main
 
@@ -38,7 +94,32 @@ func TestRun_ReturnsNilAfterShutdown(t *testing.T) {
 	}
 }
 
+func TestRun_FailsWithoutDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+
+	err := run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required") {
+		t.Fatalf("expected a missing DATABASE_URL error, got %v", err)
+	}
+}
+
+func TestRun_FailsWhenDatabaseIsUnreachable(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:s3cret-test-password@"+closedAddr(t)+"/db?sslmode=disable")
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("LOG_LEVEL", "error")
+
+	err := run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "connect to postgres") {
+		t.Fatalf("expected a connection error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "s3cret-test-password") {
+		t.Errorf("error contains the password: %v", err)
+	}
+}
+
 func TestRun_FailsWhenPortIsTaken(t *testing.T) {
+	requireDatabase(t)
+
 	// Occupy a port first, then ask run to listen on the same one.
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

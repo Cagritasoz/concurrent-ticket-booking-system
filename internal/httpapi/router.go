@@ -18,7 +18,7 @@ func init() {
 }
 
 // NewRouter builds the Gin engine with its middleware and routes.
-func NewRouter(logger *slog.Logger, readiness *Readiness) *gin.Engine {
+func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger) *gin.Engine {
 	// gin.New() starts with no middleware. gin.Default() would add Gin's own logger and recovery,
 	// which write plain text to the console. We add our own so every log line goes through slog.
 	router := gin.New()
@@ -44,7 +44,7 @@ func NewRouter(logger *slog.Logger, readiness *Readiness) *gin.Engine {
 	// In a way the following code is saying when a request is sent to this path call this handler func.
 	// We can think of it like spring's controller method.
 	router.GET("/healthz", healthz)
-	router.GET("/readyz", readyz(readiness))
+	router.GET("/readyz", readyz(readiness, database, logger))
 
 	return router
 }

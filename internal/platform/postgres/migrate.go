@@ -7,6 +7,7 @@ import (
 	"io/fs"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
@@ -20,11 +21,21 @@ import (
 // Flyway's flyway_schema_history. A Postgres advisory lock makes sure only one Migrator changes a
 // database at a time.
 //
+// Dirty means a migration started and was never marked as finished. Before running a file,
+// golang-migrate writes the version the database will be at afterwards, with dirty = true, and
+// only after the file succeeds does it set dirty = false. For the up file of migration N that
+// version is N; for the down file of migration N it is the version below (N-1, or 0 for
+// migration 1). If the file fails or the process is killed, the flag stays true. It is written
+// outside the file's transaction, so it survives even though Postgres rolls the file's changes
+// back. golang-migrate can't know that (some databases can't roll back DDL), so Up and Down refuse
+// to run until a person checks the database and Force clears the flag.
+//
 // The Migrator never uses the app's pgxpool: cmd/migrate is a separate program that runs before
 // the app and opens its own connection. golang-migrate works through database/sql (Go's JDBC), with
 // pgx underneath as the driver, so pgx is still the only code that talks to Postgres.
 type Migrator struct {
-	m *migrate.Migrate
+	m      *migrate.Migrate
+	driver database.Driver // the same driver m uses, kept to read schema_migrations directly
 }
 
 // NewMigrator connects to the database and prepares the migrations in files, a folder of
@@ -70,7 +81,7 @@ func NewMigrator(ctx context.Context, databaseURL string, files fs.FS) (*Migrato
 		_ = source.Close()
 		return nil, fmt.Errorf("create migrator: %w", err)
 	}
-	return &Migrator{m: m}, nil
+	return &Migrator{m: m, driver: driver}, nil
 }
 
 // Up applies every migration that hasn't been applied yet. Nothing to apply is not an error.
@@ -87,11 +98,13 @@ func (mg *Migrator) Up() error {
 
 // Down rolls back the last applied migration only, never all of them at once.
 func (mg *Migrator) Down() error {
-	version, _, err := mg.Version()
+	version, dirty, err := mg.Version()
 	if err != nil {
 		return err
 	}
-	if version == 0 {
+	// Version 0 and dirty means the down of migration 1 failed. Steps then reports ErrDirty,
+	// which is the useful error here, not "nothing to roll back".
+	if version == 0 && !dirty {
 		return errors.New("migrate down: no migration is applied, nothing to roll back")
 	}
 	if err := mg.m.Steps(-1); err != nil {
@@ -102,15 +115,19 @@ func (mg *Migrator) Down() error {
 
 // Version returns the current version (0 if no migration is applied) and whether the last
 // migration failed halfway.
+//
+// It reads schema_migrations through the driver, not through mg.m.Version: that one turns
+// golang-migrate's "no version" (-1) into ErrNilVersion and drops the dirty flag with it, so a
+// failed down of migration 1 would look like a clean version 0.
 func (mg *Migrator) Version() (version uint, dirty bool, err error) {
-	version, dirty, err = mg.m.Version()
-	if errors.Is(err, migrate.ErrNilVersion) {
-		return 0, false, nil
-	}
+	v, dirty, err := mg.driver.Version()
 	if err != nil {
 		return 0, false, fmt.Errorf("read version: %w", err)
 	}
-	return version, dirty, nil
+	if v == database.NilVersion {
+		return 0, dirty, nil
+	}
+	return uint(v), dirty, nil
 }
 
 // Force sets the version and clears the dirty flag without running any SQL. It is the way out
@@ -133,13 +150,28 @@ func (mg *Migrator) Close() error {
 	return errors.Join(sourceErr, dbErr)
 }
 
-// explain adds what to do next to golang-migrate's "dirty" error.
+// explain adds what to do next to golang-migrate's ErrDirty, whose own message is only "Dirty
+// database version N. Fix and force version." It uses errors.As, not errors.Is, because ErrDirty
+// is a struct type that carries the version, not one fixed value like ErrNoChange: errors.As finds
+// an ErrDirty anywhere in err's chain and copies it into dirty. The original error is wrapped with
+// %w, so its text stays at the end and callers can still find it with errors.As. Any other error is
+// returned unchanged.
+//
+// A custom error struct can be of type error if it implements Error() function.
+// For ease, we can also use errors.New() to create a predefined variable of type error.
+// ErrDirty comes on the run after a failure: the failing run itself returns the SQL error, and the
+// next Up or Down finds the flag still set.
+//
+// The message doesn't name the migration that failed, because the dirty version doesn't say it:
+// after a failed up it is the failed migration, after a failed down the one below it (see
+// Migrator). golang-migrate writes "no version" as -1; the message shows it as 0, like Version.
 func explain(err error) error {
 	var dirty migrate.ErrDirty
 	if errors.As(err, &dirty) {
-		return fmt.Errorf("migration %d failed halfway and the database is marked dirty: "+
-			"check and fix the database by hand, then force the version that is really applied "+
-			"(make migrate-force version=N): %w", dirty.Version, err)
+		return fmt.Errorf("the database is marked dirty at version %d because an earlier migration "+
+			"failed halfway (a failed up leaves the version of the migration that failed, a failed "+
+			"down the version below it): check the database by hand, then force the version that "+
+			"is really applied (make migrate-force version=N): %w", max(dirty.Version, 0), err)
 	}
 	return err
 }

@@ -41,6 +41,7 @@ func main() {
 	}
 }
 
+// reuse the same err variable, := for new variables
 func run(ctx context.Context, args []string) error {
 	cmd, err := parseArgs(args)
 	if err != nil {

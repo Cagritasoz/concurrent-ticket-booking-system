@@ -168,3 +168,69 @@ func TestMigrator_FailedMigrationMarksTheDatabaseDirty(t *testing.T) {
 	}
 	requireVersion(t, migrator, 1, false)
 }
+
+// A failed down is marked dirty at the version below the failed migration, while the rollback
+// itself was undone, so the failed migration is still applied.
+func TestMigrator_FailedDownMarksTheVersionBelowDirty(t *testing.T) {
+	databaseURL := pgtest.NewDatabase(t)
+	files := testMigrations()
+	files["000002_create_b.down.sql"] = &fstest.MapFile{Data: []byte("DROP TABLE b;\nSELEC 1;")}
+	migrator := newMigrator(t, databaseURL, files)
+
+	if err := migrator.Up(); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if err := migrator.Down(); err == nil {
+		t.Fatal("Down with a broken down file: expected an error, got nil")
+	}
+	requireVersion(t, migrator, 1, true)
+
+	// DROP TABLE b was rolled back with the rest of the file, so migration 2 is still applied.
+	if !tableExists(t, databaseURL, "b") {
+		t.Error("table b is gone, but the failed down should have been rolled back as a whole")
+	}
+
+	err := migrator.Up()
+	if err == nil || !strings.Contains(err.Error(), "dirty at version 1") {
+		t.Fatalf("Up on a dirty database: got %v, want an error that says dirty at version 1", err)
+	}
+
+	if err := migrator.Force(2); err != nil {
+		t.Fatalf("Force: %v", err)
+	}
+	requireVersion(t, migrator, 2, false)
+}
+
+// A failed down of migration 1 is marked dirty with golang-migrate's "no version". Version must
+// still report it as dirty, and Down must say dirty, not "nothing to roll back".
+func TestMigrator_FailedDownOfTheFirstMigrationStaysDirty(t *testing.T) {
+	databaseURL := pgtest.NewDatabase(t)
+	files := testMigrations()
+	files["000001_create_a.down.sql"] = &fstest.MapFile{Data: []byte("DROP TABLE a;\nSELEC 1;")}
+	migrator := newMigrator(t, databaseURL, files)
+
+	if err := migrator.Up(); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if err := migrator.Down(); err != nil { // migration 2's down file is fine
+		t.Fatalf("first Down: %v", err)
+	}
+	if err := migrator.Down(); err == nil {
+		t.Fatal("Down with a broken down file: expected an error, got nil")
+	}
+	requireVersion(t, migrator, 0, true)
+
+	if !tableExists(t, databaseURL, "a") {
+		t.Error("table a is gone, but the failed down should have been rolled back as a whole")
+	}
+
+	err := migrator.Down()
+	if err == nil || !strings.Contains(err.Error(), "dirty at version 0") {
+		t.Fatalf("Down on a dirty database: got %v, want an error that says dirty at version 0", err)
+	}
+
+	if err := migrator.Force(1); err != nil {
+		t.Fatalf("Force: %v", err)
+	}
+	requireVersion(t, migrator, 1, false)
+}

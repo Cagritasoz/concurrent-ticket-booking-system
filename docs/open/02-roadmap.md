@@ -118,8 +118,9 @@ standing section. Every ticket has a place: a seat, or a standing section.
   `make migrate-up`, `migrate-down`, `migrate-version` and `migrate-force version=N`, without ever
   printing the password. The first migration creates `venues` with `CHECK`s for every rule the
   database can enforce. `pgtest.NewDatabase` gives each test a fresh database. Tests check the
-  file naming rules, run every migration up, down and up again, show that a failed migration is
-  rolled back and marks the database dirty, and try each `venues` rule. CI also runs the make
+  file naming rules, run every migration up, down and up again, show that a failed up or down is
+  rolled back and marks the database dirty (a failed down at the version below it), and try each
+  `venues` rule. CI also runs the make
   targets.
 
 ### Planned M1 endpoints

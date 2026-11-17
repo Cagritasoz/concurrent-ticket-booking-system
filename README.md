@@ -12,6 +12,7 @@ Quick start:
 cp .env.example .env                   # then change the password in it
 make up                                # starts Postgres
 # set DATABASE_URL in your shell or IDE, then:
+make migrate-up                        # creates the tables
 go run ./cmd/ticketing                 # serves on :8080
 curl http://localhost:8080/healthz
 make check                             # lint and tests (needs the tools in docs/open/08-development.md)

@@ -31,8 +31,14 @@ they must match `DATABASE_URL`.
 The user, password and database are only applied when the data volume is first created. To change
 them later, run `docker compose down -v`, which **deletes the local database**, then `make up`.
 
+`cmd/migrate` (`make migrate-up` and the other migration targets) reads the same `DATABASE_URL`,
+plus `LOG_LEVEL` and `LOG_FORMAT`.
+
 `TEST_DATABASE_URL` is read only by tests that need a real Postgres, and they are skipped when it
-isn't set. CI sets it. M1 step 3 replaces it with a Postgres the tests start themselves.
+isn't set. CI sets it. Most of these tests create their own database on that server, named
+`test_` plus random letters, and drop it when they finish, so the user needs permission to create
+databases (the Compose user has it). The database named in the URL is never changed, so it can be
+the same as `DATABASE_URL`. M1 step 3 replaces this with a Postgres the tests start themselves.
 
 ## HTTP server
 

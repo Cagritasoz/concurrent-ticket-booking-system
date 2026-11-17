@@ -74,6 +74,10 @@ be added to `DATABASE_URL` without code.
 Unlike Hikari's `connectionTimeout`, the pool has no setting for how long to wait for a free
 connection: a query waits until its `context` is cancelled or times out.
 
+The tables come from the migrations in `migrations/`. The app doesn't run them and doesn't check
+which version the database is at: `make migrate-up` is run before starting the app (see
+[08-development](08-development.md#database-migrations)).
+
 ## HTTP server
 
 `http.Server` is used instead of Gin's `router.Run()`, which has no timeouts. Each timeout limits

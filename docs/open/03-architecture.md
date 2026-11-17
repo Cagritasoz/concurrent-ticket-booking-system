@@ -7,13 +7,16 @@
 ```
 .
 ├── cmd/
-│   └── ticketing/main.go            # composition root: config → logger → Postgres pool → router → listener → http.Server; graceful shutdown
+│   ├── ticketing/main.go            # composition root: config → logger → Postgres pool → router → listener → http.Server; graceful shutdown
+│   └── migrate/main.go              # migration command: up, down, version, force
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── platform/
-│   │   ├── postgres/                # connection pool setup (pgxpool)
+│   │   ├── postgres/                # connection pool setup (pgxpool), Migrator (golang-migrate)
+│   │   │   └── pgtest/              # a fresh database per test
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
 │   └── httpapi/                     # Gin router, middleware, health handlers, Readiness
+├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
 ├── docker-compose.yaml              # Postgres; Redis + redis-commander (used by the examples)
@@ -32,12 +35,13 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 ```
 .
 ├── cmd/
-│   └── ticketing/main.go            # composition root: config → clients → modules → HTTP server + workers; graceful shutdown
+│   ├── ticketing/main.go            # composition root: config → clients → modules → HTTP server + workers; graceful shutdown
+│   └── migrate/main.go              # migration command
 ├── internal/
 │   ├── config/                      # env vars → typed Config + Validate()
 │   ├── platform/                    # infrastructure client setup ONLY, no business rules
-│   │   ├── postgres/                # pgxpool; (planned, M1) WithTx helper, pg error mapping (23505 → domain error)
-│   │   │   └── pgtest/              # (planned, M1) Testcontainers Postgres + migrations for integration tests
+│   │   ├── postgres/                # pgxpool, Migrator; (planned, M1) WithTx helper, pg error mapping (23505 → domain error)
+│   │   │   └── pgtest/              # a fresh database per test; (planned, M1) Testcontainers Postgres + migrations
 │   │   ├── redis/                   # (planned, M5) client constructor (returns an error, never exits)
 │   │   ├── elastic/                 # (planned, M8) client constructor
 │   │   └── telemetry/               # slog setup, request IDs; Prometheus registry later (M9)
@@ -55,7 +59,7 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   ├── search/                      # (planned, M8) MODULE: mapping, outbox consumer, queries, alias-swap rebuild
 │   └── httpapi/                     # Gin: router, middleware, handlers, error → status mapping, health
 ├── examples/                        # early learning code, not part of the app
-├── migrations/                      # (planned, M1) golang-migrate files
+├── migrations/                      # golang-migrate files, shared by all modules (one schema history)
 ├── sqlc.yaml                        # (planned, M1)
 ├── dev/keycloak/realm.json          # (planned, M2)
 ├── loadtest/                        # (planned, M9) k6 scripts

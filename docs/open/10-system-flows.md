@@ -10,7 +10,7 @@ that builds each part is in the [roadmap](02-roadmap.md); the rules it must resp
 
 | Part | Responsibility | Source of truth for |
 |---|---|---|
-| **event** module | Admin side: venues (with an optional seat layout), events, ticket tiers, generating one ticket row per sellable unit, publishing and cancelling events | Events, tiers, prices, tickets |
+| **event** module | Admin side: venues with their layouts, sections and seats, events, ticket tiers, generating one ticket row per sellable unit, publishing and cancelling events | Events, tiers, prices, tickets |
 | **booking** module | Customer side: holding tickets, the booking lifecycle, idempotent requests, per-customer limits, Stripe payments, webhooks, expiry, reconciliation, refunds | Bookings, who owns which ticket, payments |
 | **search** module | Fast discovery for users: full-text search, filters, sorting, pagination over Elasticsearch | Nothing: it is a read-only copy of Postgres |
 | **auth** | Verifies Keycloak login tokens and roles (customer, event admin) | Nothing: Keycloak owns identities |

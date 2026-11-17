@@ -42,5 +42,5 @@ and comes from **Java / Spring Boot**.
 - Run `go test -race` from **PowerShell**. In Claude's Git Bash the cgo step of the race build
   fails (`runtime/cgo: cgo.exe: exit status 2`) while the same command works in PowerShell. Likely
   cause (not confirmed): McAfee blocks the program; the owner sees a McAfee popup at the same time.
-- Test command for the application code: `go test -count=1 -race ./cmd/... ./internal/...`
+- Test command for the application code: `go test -count=1 -race ./cmd/... ./internal/... ./migrations/...`
   (never include `./examples/...`). Setup and other commands: `docs/open/08-development.md`.

@@ -9,6 +9,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	pgxmigrate "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -36,6 +37,7 @@ import (
 type Migrator struct {
 	m      *migrate.Migrate
 	driver database.Driver // the same driver m uses, kept to read schema_migrations directly
+	source source.Driver   // the same migration files m uses, kept to check versions in Force
 }
 
 // NewMigrator connects to the database and prepares the migrations in files, a folder of
@@ -43,7 +45,7 @@ type Migrator struct {
 // Close the Migrator.
 func NewMigrator(ctx context.Context, databaseURL string, files fs.FS) (*Migrator, error) {
 	// create migration source from a Go filesystem
-	source, err := iofs.New(files, ".")
+	src, err := iofs.New(files, ".")
 	if err != nil {
 		return nil, fmt.Errorf("read migrations: %w", err)
 	}
@@ -52,7 +54,7 @@ func NewMigrator(ctx context.Context, databaseURL string, files fs.FS) (*Migrato
 	// password from its errors, and the ping gets a time limit.
 	connConfig, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		_ = source.Close() // nothing useful to do if closing fails; the parse error matters more
+		_ = src.Close() // nothing useful to do if closing fails; the parse error matters more
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
 	// stdlib is pgx's database/sql driver. *sql.DB has a small pool of its own, but golang-migrate
@@ -63,7 +65,7 @@ func NewMigrator(ctx context.Context, databaseURL string, files fs.FS) (*Migrato
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
-		_ = source.Close()
+		_ = src.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 
@@ -71,17 +73,17 @@ func NewMigrator(ctx context.Context, databaseURL string, files fs.FS) (*Migrato
 	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
 	if err != nil {
 		_ = db.Close()
-		_ = source.Close()
+		_ = src.Close()
 		return nil, fmt.Errorf("prepare schema_migrations: %w", err)
 	}
 
-	m, err := migrate.NewWithInstance("iofs", source, "pgx5", driver)
+	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
 	if err != nil {
 		_ = driver.Close() // also closes db
-		_ = source.Close()
+		_ = src.Close()
 		return nil, fmt.Errorf("create migrator: %w", err)
 	}
-	return &Migrator{m: m, driver: driver}, nil
+	return &Migrator{m: m, driver: driver, source: src}, nil
 }
 
 // Up applies every migration that hasn't been applied yet. Nothing to apply is not an error.
@@ -118,13 +120,13 @@ func (mg *Migrator) Down() error {
 //
 // It reads schema_migrations through the driver, not through mg.m.Version: that one turns
 // golang-migrate's "no version" (-1) into ErrNilVersion and drops the dirty flag with it, so a
-// failed down of migration 1 would look like a clean version 0.
+// failed down of migration 1 would look like a clean version 0 which is misleading.
 func (mg *Migrator) Version() (version uint, dirty bool, err error) {
 	v, dirty, err := mg.driver.Version()
 	if err != nil {
 		return 0, false, fmt.Errorf("read version: %w", err)
 	}
-	if v == database.NilVersion {
+	if v == database.NilVersion { // convert -1 meaning empty database to readable 0.
 		return 0, dirty, nil
 	}
 	return uint(v), dirty, nil
@@ -132,8 +134,17 @@ func (mg *Migrator) Version() (version uint, dirty bool, err error) {
 
 // Force sets the version and clears the dirty flag without running any SQL. It is the way out
 // after a failed migration, once the database has been fixed by hand (like Flyway's repair).
-// Version 0 means "no migration applied".
+// Version 0 means "no migration applied", golang-migrate uses -1 for empty table.
+// For us to be able to read it we convert a 0 into -1.
+//
+// A version other than 0 must have a migration file. golang-migrate's own Force accepts any
+// number, and the next Up or Down would then fail with "no migration found".
 func (mg *Migrator) Force(version uint) error {
+	if version != 0 {
+		if err := mg.requireMigration(version); err != nil {
+			return fmt.Errorf("force version %d: %w", version, err)
+		}
+	}
 	v := int(version)
 	if version == 0 {
 		v = -1 // golang-migrate's "no version"; its version 0 would mean a migration numbered 0
@@ -142,6 +153,29 @@ func (mg *Migrator) Force(version uint) error {
 		return fmt.Errorf("force version %d: %w", version, err)
 	}
 	return nil
+}
+
+// requireMigration returns an error if no migration has this version. It walks the versions in
+// order with First and Next, which only read the list of file names, not the files.
+func (mg *Migrator) requireMigration(version uint) error {
+	var latest uint
+	found := false // whether there is any migration at all
+	v, err := mg.source.First()
+	for err == nil {
+		if v == version {
+			return nil
+		}
+		latest, found = v, true
+		v, err = mg.source.Next(v)
+	}
+	if !errors.Is(err, fs.ErrNotExist) { // ErrNotExist only means there is no next version
+		return fmt.Errorf("read migrations: %w", err)
+	}
+	if !found {
+		return errors.New("there are no migrations, so 0 (no migration applied) is the only valid version")
+	}
+	return fmt.Errorf("no migration has version %d; the latest is %d, and 0 means no migration applied",
+		version, latest)
 }
 
 // Close closes the database connection.

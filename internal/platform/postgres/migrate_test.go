@@ -5,6 +5,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -167,6 +168,80 @@ func TestMigrator_FailedMigrationMarksTheDatabaseDirty(t *testing.T) {
 		t.Fatalf("Force: %v", err)
 	}
 	requireVersion(t, migrator, 1, false)
+}
+
+// When the very first migration fails, nothing is applied, and Force(0) must bring the database
+// back to "no version" so Up starts again at migration 1.
+func TestMigrator_FailedFirstMigrationIsForcedToZero(t *testing.T) {
+	databaseURL := pgtest.NewDatabase(t)
+	files := testMigrations()
+	files["000001_create_a.up.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE a (id int);\nSELEC 1;")}
+	migrator := newMigrator(t, databaseURL, files)
+
+	if err := migrator.Up(); err == nil {
+		t.Fatal("Up with a broken first migration: expected an error, got nil")
+	}
+	requireVersion(t, migrator, 1, true)
+	if tableExists(t, databaseURL, "a") {
+		t.Error("table a exists, but the failed migration should have been rolled back as a whole")
+	}
+
+	if err := migrator.Force(0); err != nil {
+		t.Fatalf("Force: %v", err)
+	}
+	requireVersion(t, migrator, 0, false)
+
+	// Fix the file, as a person would, and run Up again with a new Migrator.
+	files["000001_create_a.up.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE a (id int);")}
+	fixed := newMigrator(t, databaseURL, files)
+	if err := fixed.Up(); err != nil {
+		t.Fatalf("Up after the fix: %v", err)
+	}
+	requireVersion(t, fixed, 2, false)
+}
+
+// Force only accepts 0 or a version that has a migration, and a rejected version changes nothing.
+func TestMigrator_ForceRejectsAVersionWithoutAMigration(t *testing.T) {
+	databaseURL := pgtest.NewDatabase(t)
+	files := testMigrations()
+	// A gap: versions 1, 2 and 5, so the check can't just compare against the latest version.
+	files["000005_create_c.up.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE c (id int);")}
+	files["000005_create_c.down.sql"] = &fstest.MapFile{Data: []byte("DROP TABLE c;")}
+	migrator := newMigrator(t, databaseURL, files)
+
+	if err := migrator.Up(); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	for _, version := range []uint{3, 4, 6, 1000} {
+		err := migrator.Force(version)
+		want := fmt.Sprintf("no migration has version %d; the latest is 5", version)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Force(%d): got %v, want an error that says %q", version, err, want)
+		}
+	}
+	requireVersion(t, migrator, 5, false) // the rejected versions changed nothing
+
+	for _, version := range []uint{2, 0} {
+		if err := migrator.Force(version); err != nil {
+			t.Fatalf("Force(%d): %v", version, err)
+		}
+		requireVersion(t, migrator, version, false)
+	}
+}
+
+func TestMigrator_ForceWithoutMigrationsOnlyAcceptsZero(t *testing.T) {
+	databaseURL := pgtest.NewDatabase(t)
+	migrator := newMigrator(t, databaseURL, fstest.MapFS{})
+
+	err := migrator.Force(1)
+	if err == nil || !strings.Contains(err.Error(), "there are no migrations") {
+		t.Fatalf("Force(1): got %v, want an error that says there are no migrations", err)
+	}
+	if err := migrator.Force(0); err != nil {
+		t.Fatalf("Force(0): %v", err)
+	}
+	requireVersion(t, migrator, 0, false)
 }
 
 // A failed down is marked dirty at the version below the failed migration, while the rollback

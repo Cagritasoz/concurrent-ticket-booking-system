@@ -88,25 +88,11 @@ Go counterpart of Flyway). `schema_migrations` records the current version, like
   such as `CREATE INDEX CONCURRENTLY`.
 
 **When a migration fails ("dirty"):** the file's changes are rolled back, but `schema_migrations`
-keeps a version with `dirty = true`, and `up` and `down` refuse to run. `make migrate-version`
-shows it. The dirty version is the one the database was moving to:
-
-| What failed | Dirty version shown | Really applied (the rollback undid the file) | Fix |
-|---|---|---|---|
-| the up file of migration 2 | 2 | 1 | `make migrate-force version=1` |
-| the down file of migration 2 | 1 | 2 | `make migrate-force version=2` |
-| the down file of migration 1 | 0 | 1 | `make migrate-force version=1` |
-
-To recover:
-
-1. Read the error and fix the SQL in the failed file. A failed up file was never applied, so editing
-   it is fine. Fixing a broken down file is fine too: it changes nothing a database already ran.
-2. Check the database by hand (e.g. `psql`) for anything the file left behind. Because each file is
-   one transaction, normally nothing is.
-3. Force the version that is really applied (see the table).
-4. Run the command again.
-
-This is what Flyway's `repair` does. Ctrl+C during a migration leaves the same state.
+keeps a version with `dirty = true`, and `up` and `down` refuse to run until it is cleared.
+`make migrate-version` shows it. Ctrl+C during a migration leaves the same state. To recover, check
+the database, fix the file, and run `make migrate-force version=N` with the version that is really
+applied, which is not always the dirty version shown (like Flyway's `repair`). Every case, and how
+to choose N, is in [11 · Migration failures and recovery](11-migration-recovery.md).
 
 ## Continuous integration
 

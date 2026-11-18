@@ -68,21 +68,6 @@ func TestFiles_FollowTheNamingRules(t *testing.T) {
 	}
 }
 
-// migratedDatabase returns the URL of a new test database with every migration applied.
-func migratedDatabase(t *testing.T) string {
-	t.Helper()
-	databaseURL := pgtest.NewDatabase(t)
-	migrator, err := postgres.NewMigrator(t.Context(), databaseURL, migrations.Files)
-	if err != nil {
-		t.Fatalf("NewMigrator: %v", err)
-	}
-	defer func() { _ = migrator.Close() }()
-	if err := migrator.Up(); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
-	return databaseURL
-}
-
 func connect(t *testing.T, databaseURL string) *pgx.Conn {
 	t.Helper()
 	conn, err := pgx.Connect(t.Context(), databaseURL)
@@ -191,7 +176,7 @@ const (
 )
 
 func TestVenues_TableRules(t *testing.T) {
-	conn := connect(t, migratedDatabase(t))
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
 
 	tests := []struct {
 		name     string
@@ -240,7 +225,7 @@ func TestVenues_TableRules(t *testing.T) {
 }
 
 func TestVenues_DefaultsFillIDAndTimestamps(t *testing.T) {
-	conn := connect(t, migratedDatabase(t))
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
 	if err := insertVenue(t.Context(), conn, validVenue()); err != nil {
 		t.Fatalf("insert: %v", err)
 	}

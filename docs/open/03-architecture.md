@@ -13,7 +13,7 @@
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── platform/
 │   │   ├── postgres/                # connection pool setup (pgxpool), Migrator (golang-migrate)
-│   │   │   └── pgtest/              # a fresh database per test
+│   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
 │   └── httpapi/                     # Gin router, middleware, health handlers, Readiness
 ├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
@@ -41,7 +41,7 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   ├── config/                      # env vars → typed Config + Validate()
 │   ├── platform/                    # infrastructure client setup ONLY, no business rules
 │   │   ├── postgres/                # pgxpool, Migrator; (planned, M1) WithTx helper, pg error mapping (23505 → domain error)
-│   │   │   └── pgtest/              # a fresh database per test; (planned, M1) Testcontainers Postgres + migrations
+│   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL), optionally migrated
 │   │   ├── redis/                   # (planned, M5) client constructor (returns an error, never exits)
 │   │   ├── elastic/                 # (planned, M8) client constructor
 │   │   └── telemetry/               # slog setup, request IDs; Prometheus registry later (M9)

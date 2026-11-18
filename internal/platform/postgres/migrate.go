@@ -120,13 +120,15 @@ func (mg *Migrator) Down() error {
 //
 // It reads schema_migrations through the driver, not through mg.m.Version: that one turns
 // golang-migrate's "no version" (-1) into ErrNilVersion and drops the dirty flag with it, so a
-// failed down of migration 1 would look like a clean version 0 which is misleading.
+// failed down of migration 1 would look like a clean version 0, which is misleading.
 func (mg *Migrator) Version() (version uint, dirty bool, err error) {
 	v, dirty, err := mg.driver.Version()
 	if err != nil {
 		return 0, false, fmt.Errorf("read version: %w", err)
 	}
-	if v == database.NilVersion { // convert -1 meaning empty database to readable 0.
+	// -1 is golang-migrate's "no version": an empty schema_migrations, or the dirty -1 row a failed
+	// down of migration 1 leaves. Our versions are uint, so it is reported as 0.
+	if v == database.NilVersion {
 		return 0, dirty, nil
 	}
 	return uint(v), dirty, nil
@@ -134,8 +136,10 @@ func (mg *Migrator) Version() (version uint, dirty bool, err error) {
 
 // Force sets the version and clears the dirty flag without running any SQL. It is the way out
 // after a failed migration, once the database has been fixed by hand (like Flyway's repair).
-// Version 0 means "no migration applied", golang-migrate uses -1 for empty table.
-// For us to be able to read it we convert a 0 into -1.
+//
+// Version 0 means "no migration applied". golang-migrate writes that as -1, its "no version", so
+// Force turns 0 into -1 before passing it on: golang-migrate would read a 0 as "migration 0 is
+// applied". Version does the opposite and reports -1 as 0.
 //
 // A version other than 0 must have a migration file. golang-migrate's own Force accepts any
 // number, and the next Up or Down would then fail with "no migration found".
@@ -191,8 +195,11 @@ func (mg *Migrator) Close() error {
 // %w, so its text stays at the end and callers can still find it with errors.As. Any other error is
 // returned unchanged.
 //
-// A custom error struct can be of type error if it implements Error() function.
-// For ease, we can also use errors.New() to create a predefined variable of type error.
+// Go has two common kinds of errors. Any type with an Error() string method is an error (Go has
+// no "implements": having the method is enough), so a struct like ErrDirty can carry data such as
+// the version. A fixed error that carries nothing is a package variable made once with
+// errors.New, like ErrNoChange, and is compared with errors.Is.
+//
 // ErrDirty comes on the run after a failure: the failing run itself returns the SQL error, and the
 // next Up or Down finds the flag still set.
 //

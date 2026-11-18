@@ -8,7 +8,7 @@
 | A C compiler (`gcc`) | the race detector (`-race`) needs cgo, and cgo needs a C compiler | Windows: MSYS2, then `pacman -S mingw-w64-ucrt-x86_64-gcc` and add `C:\msys64\ucrt64\bin` to PATH. macOS: `xcode-select --install`. Linux: `build-essential`. |
 | GNU `make` | the Makefile | Windows: `pacman -S make` in MSYS2 and add `C:\msys64\usr\bin` to the **end** of PATH (it contains Unix tools such as `find.exe` that would otherwise hide the Windows ones). |
 | `golangci-lint` v2.15.0 | linting | Install the official binary into `$(go env GOPATH)/bin`, e.g. `curl -sSfL https://golangci-lint.run/install.sh \| sh -s -- -b "$(go env GOPATH)/bin" v2.15.0` (from a POSIX shell such as Git Bash). |
-| Docker Desktop | local infrastructure | Check with `docker ps`. |
+| Docker Desktop | local infrastructure, and the Postgres the tests start with Testcontainers | Check with `docker ps`. |
 
 If `go test -race` reports `-race requires cgo; enable cgo by setting CGO_ENABLED=1`, Go found no
 C compiler on PATH and turned cgo off. Install one, open a new terminal, and if
@@ -41,7 +41,8 @@ make migrate-up
 make                # list the targets below
 make run            # start the app on :8080
 make build          # compile the app into bin/ (ignored by git)
-make test           # the application's tests, race detector on
+make test           # all of the application's tests, race detector on (needs Docker running)
+make test-short     # only the tests that need no Postgres (no Docker needed)
 make lint           # golangci-lint, including go vet and format checks
 make fmt            # format the code
 make check          # lint and test, what to run before pushing
@@ -58,8 +59,11 @@ go test -v -count=1 -race ./examples/booking/
 ```
 
 `make test` uses `-count=1`, which disables Go's test cache, so tests always really run. Tests that
-need a real Postgres are skipped unless `TEST_DATABASE_URL` is set. To include them, start Postgres
-and run `$env:TEST_DATABASE_URL="<your DATABASE_URL>"; make test`. Linter
+need a real Postgres start one with Testcontainers, so Docker Desktop must be running; nothing needs
+to be set, and `make up` is not needed for tests. The first run downloads the image, later runs
+take a few seconds per package. If Docker isn't running these tests fail with a message saying so;
+use `make test-short` to skip them, or point them at an existing server with
+`$env:TEST_DATABASE_URL="<a Postgres URL>"; make test`. Linter
 settings are in `.golangci.yml`. Lint reports one issue per line, so a format problem can stay
 hidden until another issue on the same line is fixed.
 
@@ -76,7 +80,7 @@ Go counterpart of Flyway). `schema_migrations` records the current version, like
 2. The up file makes the change; the down file undoes exactly that change.
 3. Check both directions: `make migrate-up`, `make migrate-down`, `make migrate-up`.
 4. `make test` checks the naming rules and runs every migration up, down and up again against a
-   fresh database (when `TEST_DATABASE_URL` is set; CI always does).
+   fresh database.
 
 **Rules:**
 
@@ -97,8 +101,9 @@ to choose N, is in [11 · Migration failures and recovery](11-migration-recovery
 ## Continuous integration
 
 `.github/workflows/ci.yaml` runs on GitHub Actions for every push to `main` or a `milestone/**`
-branch and for pull requests into `main`. It starts a throwaway Postgres, installs the Go version
-from `go.mod`, then runs lint, `make test`, the migration targets (up, down, up) and `make build`;
+branch and for pull requests into `main`. It installs the Go version from `go.mod`, then runs lint,
+`make test` (whose Postgres tests start their own container with Testcontainers, as locally), the
+migration targets (up, down, up) against a throwaway Postgres service, and `make build`;
 `make check` covers the lint and test parts locally. `examples/` is not part of CI. Its golangci-lint version is pinned, so when upgrading, change it in the workflow
 and in the prerequisites above together.
 
@@ -124,12 +129,19 @@ applies to later commands there.
 - Tests wait on channels instead of sleeping: a test handler signals when it has started and
   blocks until the test releases it, so timing never decides the result. The exception is waiting
   for the whole app to start, where a test polls `/readyz`, with a time limit.
-- Tests that need Postgres get their own database from `pgtest.NewDatabase(t)`: a fresh, empty
-  database that is dropped when the test ends, so tests never see each other's data. Tests that use
-  `pgtest` live in the external test package (`package postgres_test`, not `package postgres`),
-  because `pgtest` will import `postgres` in M1 step 3 and Go doesn't allow import cycles.
-- Every test run uses `-race`.
-- Planned with the first integration tests (M1): unit tests run under `go test -short`;
-  integration tests call `t.Skip` when `testing.Short()` is true and start one container per
-  package in `TestMain`. CI runs both with `-race`.
+- Tests that need Postgres get their own database from `pgtest`, like `@Testcontainers` with
+  `@DataJpaTest` in Spring:
+  - `pgtest.NewDatabase(t)` returns the URL of a fresh, empty database, dropped when the test ends,
+    so tests never see each other's data. `pgtest.NewMigratedDatabase(t)` does the same with every
+    migration applied, for code that uses the tables.
+  - The server is `TEST_DATABASE_URL` if set; otherwise the first test that needs it starts a
+    Postgres container, which the package's other tests share.
+  - Every package that uses `pgtest` needs `func TestMain(m *testing.M) { pgtest.Main(m) }` (in its
+    `main_test.go`). It removes the container after the tests; a test fails with a clear message if
+    it's missing. If the process is killed, Testcontainers' Ryuk container removes it.
+  - Under `go test -short` these tests are skipped.
+  - In `internal/platform/postgres` the tests live in the external test package
+    (`package postgres_test`, not `package postgres`), because `pgtest` imports `postgres` and Go
+    doesn't allow import cycles.
+- Every test run uses `-race`. CI runs the full set, including the Postgres tests.
 - `examples/` is not part of the regular test runs.

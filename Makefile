@@ -11,12 +11,13 @@ PACKAGES := ./cmd/... ./internal/... ./migrations/...
 
 # .PHONY says these names are commands, not files to build. Without it, a file or folder named
 # "test" would make "make test" think there is nothing to do.
-.PHONY: help run build test lint fmt check up down migrate-up migrate-down migrate-version migrate-force
+.PHONY: help run build test test-short lint fmt check up down migrate-up migrate-down migrate-version migrate-force
 
 help:
 	@echo "make run              start the app"
 	@echo "make build            compile the app into bin/"
-	@echo "make test             run the tests with the race detector"
+	@echo "make test             run all tests with the race detector (needs Docker or TEST_DATABASE_URL)"
+	@echo "make test-short       only the tests that need no Postgres"
 	@echo "make lint             run golangci-lint (includes go vet and format checks)"
 	@echo "make fmt              format the code"
 	@echo "make check            lint and test, what CI runs"
@@ -34,8 +35,14 @@ build:
 	go build -o bin/ ./cmd/ticketing
 
 # -count=1 turns off Go's test cache, so the tests always really run.
+# Tests that need Postgres get it from pgtest: TEST_DATABASE_URL if set, otherwise a container
+# started by Testcontainers (Docker must be running).
 test:
 	go test -count=1 -race $(PACKAGES)
+
+# -short skips the tests that need Postgres, so no Docker is needed.
+test-short:
+	go test -count=1 -race -short $(PACKAGES)
 
 lint:
 	golangci-lint run $(PACKAGES)

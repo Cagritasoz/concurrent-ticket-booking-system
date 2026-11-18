@@ -7,8 +7,9 @@
   HTTP server with health checks and request IDs, graceful shutdown, endpoint and shutdown tests,
   Makefile, lint config and CI workflow).
 - **Done in M1:** step 1 (Postgres in Docker Compose, connection pool, `/readyz` checks Postgres),
-  step 2 (golang-migrate, `cmd/migrate`, the `venues` table).
-- **Next:** M1 step 3, tests start their own Postgres with Testcontainers.
+  step 2 (golang-migrate, `cmd/migrate`, the `venues` table), step 3 (tests start their own
+  Postgres with Testcontainers).
+- **Next:** M1 step 4, sqlc, the `WithTx` transaction helper and the first venue queries.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -94,8 +95,8 @@ standing section. Every ticket has a place: a seat, or a standing section.
 |---|---|---|---|
 | 1 | Postgres in Docker Compose; `DATABASE_URL` in config and `.env.example`; connection pool in `internal/platform/postgres`; `/readyz` also checks Postgres; the pool closes on shutdown | `spring.datasource.*` + HikariCP + Actuator DB health | Done |
 | 2 | golang-migrate: a `migrations/` folder, `make migrate-up` and `make migrate-down`, the first table (`venues`: name, description, address, optional coordinates, time zone, optional capacity) | Flyway | Done |
-| 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Next |
-| 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; Postgres errors mapped to domain errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Not started |
+| 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Done |
+| 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; Postgres errors mapped to domain errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Next |
 | 5 | **First REST endpoints:** venue service and CRUD handlers under `/api/v1/admin`; request validation; one JSON error format; domain error → HTTP status mapping | `@RestController` + Bean Validation + `@ControllerAdvice` | Not started |
 | 6 | Layouts and sections: a venue's layouts; each layout's sections, either seated or standing with a capacity | Child entities + nested endpoints | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
@@ -112,7 +113,7 @@ standing section. Every ticket has a place: a seat, or a standing section.
   settings and pings at startup, so a bad connection stops the app; `/readyz` pings the database
   with a 2s limit, `/healthz` doesn't touch it. Tests that need a real database use
   `TEST_DATABASE_URL`: CI provides a Postgres, and locally they are skipped when it isn't set, until
-  step 3 replaces this with Testcontainers.
+  step 3 replaced this with Testcontainers.
 - **Step 2:** golang-migrate v4.20.1. `migrations/` holds the SQL files and embeds them into the
   program; `cmd/migrate` applies them (`up`, `down` one at a time, `version`, `force`) through
   `make migrate-up`, `migrate-down`, `migrate-version` and `migrate-force version=N`, without ever
@@ -122,6 +123,13 @@ standing section. Every ticket has a place: a seat, or a standing section.
   rolled back and marks the database dirty (a failed down at the version below it), and try each
   `venues` rule. CI also runs the make
   targets.
+- **Step 3:** testcontainers-go v0.45.0. `pgtest` starts `postgres:17.11-alpine` on the first test
+  that needs it, shares it within the test package and removes it in `pgtest.Main` (every such
+  package has a one-line `TestMain`); `TEST_DATABASE_URL` still overrides it. `NewMigratedDatabase`
+  gives a database with every migration applied. `go test -short` (`make test-short`) skips these
+  tests; without Docker or `TEST_DATABASE_URL` they fail instead of skipping. All tests that used
+  `TEST_DATABASE_URL` directly now go through `pgtest`, and CI's tests use Testcontainers too (its
+  Postgres service remains for the migration targets).
 
 ### Planned M1 endpoints
 

@@ -16,8 +16,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # A throwaway Postgres for the tests that need one. It exists only during this job, so its
-    # password is not a secret. M1 step 3 replaces it with a Postgres the tests start themselves.
+    # A throwaway Postgres for the migration targets below. It exists only during this job, so its
+    # password is not a secret. The tests don't use it: they start their own with Testcontainers,
+    # the same way as on a developer's machine.
     services:
       postgres:
         image: postgres:17.11-alpine
@@ -48,10 +49,9 @@ jobs:
           version: v2.15.0
           args: ./cmd/... ./internal/... ./migrations/...
 
+      # No TEST_DATABASE_URL: pgtest starts Postgres with Testcontainers (the runner has Docker).
       - name: Test
         run: make test
-        env:
-          TEST_DATABASE_URL: postgres://ticketing:ci-only-password@localhost:5432/ticketing?sslmode=disable
 
       # The make targets themselves, run the way a developer runs them: apply, roll back, apply.
       - name: Migrations

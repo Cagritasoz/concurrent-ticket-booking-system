@@ -1,6 +1,3 @@
-// These tests are in package postgres_test, outside package postgres, because they use pgtest,
-// and pgtest will use package postgres in M1 step 3. Inside package postgres that would be an
-// import cycle, which Go doesn't allow.
 package postgres_test
 
 import (

@@ -34,20 +34,24 @@ type command struct {
 func main() {
 	// No signal handling on purpose: golang-migrate can't be interrupted cleanly, so Ctrl+C ends
 	// the process and Postgres rolls back the migration that was running.
-	// slice[start:end], start inclusive, end exclusive
+	//
+	// os.Args[0] is the program's own name, so os.Args[1:] passes only the arguments after it.
+	// slice[start:end] takes start up to, but not including, end; a missing end means the end.
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// reuse the same err variable, := for new variables
+// run executes one migration command and logs the version before and after it.
 func run(ctx context.Context, args []string) error {
 	cmd, err := parseArgs(args)
 	if err != nil {
 		return err
 	}
 
+	// := needs at least one new variable on its left. cfg is new and err already exists in this
+	// scope, so err is reused (assigned), not declared again.
 	cfg, err := config.Load(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

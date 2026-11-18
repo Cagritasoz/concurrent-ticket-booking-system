@@ -7,27 +7,26 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres/pgtest"
 )
 
 // These tests call run directly, the way main does. t.Setenv sets an environment variable for
 // this test only and restores the old value afterwards. Port 0 asks the operating system for any
 // free port, so the tests never clash with an app already running on 8080.
 
-// requireDatabase points run at a real Postgres. The test is skipped unless TEST_DATABASE_URL is
-// set; CI sets it. M1 step 3 replaces this with a Postgres that the tests start themselves.
+// TestMain runs the tests of this package and removes pgtest's Postgres container afterwards.
+func TestMain(m *testing.M) { pgtest.Main(m) }
+
+// requireDatabase points run at a fresh, empty database of its own (see pgtest). The app doesn't
+// need tables yet: it only connects and pings.
 func requireDatabase(t *testing.T) {
 	t.Helper()
-	databaseURL := os.Getenv("TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
-	t.Setenv("DATABASE_URL", databaseURL)
+	t.Setenv("DATABASE_URL", pgtest.NewDatabase(t))
 }
 
 // closedAddr returns an address on this machine where nothing is listening.
@@ -158,13 +157,13 @@ func newSlowServer(t *testing.T) *slowServer {
 
 	s := &slowServer{
 		listener: listener,
-		started:  make(chan struct{}), // empty struct to mean that event matters not the type.
+		started:  make(chan struct{}), // struct{} carries no data: only the close matters, as a signal
 		release:  make(chan struct{}),
 		shutdown: make(chan struct{}),
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(s.started) // close started channel
-		<-s.release      // Wait for "release" channel to be closed.
+		close(s.started) // wakes everyone waiting on <-s.started: the request has arrived
+		<-s.release      // blocks until the test closes release
 		_, _ = io.WriteString(w, "done")
 	})
 	s.server = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
@@ -185,7 +184,7 @@ type response struct {
 
 // sendRequest sends a GET in the background and delivers the result on the returned channel.
 func (s *slowServer) sendRequest() <-chan response {
-	result := make(chan response, 1) // channel that uses the response struct.
+	result := make(chan response, 1) // room for one, so the goroutine's send never blocks
 	go func() {
 		client := &http.Client{Timeout: 5 * time.Second}
 		// The address decides which server is reached: the listener knows the real port the

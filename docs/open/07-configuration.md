@@ -34,11 +34,13 @@ them later, run `docker compose down -v`, which **deletes the local database**, 
 `cmd/migrate` (`make migrate-up` and the other migration targets) reads the same `DATABASE_URL`,
 plus `LOG_LEVEL` and `LOG_FORMAT`.
 
-`TEST_DATABASE_URL` is read only by tests that need a real Postgres, and they are skipped when it
-isn't set. CI sets it. Most of these tests create their own database on that server, named
-`test_` plus random letters, and drop it when they finish, so the user needs permission to create
-databases (the Compose user has it). The database named in the URL is never changed, so it can be
-the same as `DATABASE_URL`. M1 step 3 replaces this with a Postgres the tests start themselves.
+`TEST_DATABASE_URL` is optional and read only by tests (through `pgtest`). When it isn't set, the
+tests that need Postgres start their own container with Testcontainers, so nothing needs to be
+configured; that is what CI does. Set it to use an existing server instead, e.g. when Docker is
+slow or missing. The tests create their own databases on that server, named `test_` plus random
+letters, and drop them when they finish, so the user needs permission to create databases (the
+Compose user has it). The database named in the URL is never changed, so it can be the same as
+`DATABASE_URL`. Neither the app nor the tests read `.env`.
 
 ## HTTP server
 

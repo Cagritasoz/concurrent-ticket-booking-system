@@ -159,7 +159,9 @@ func (r *reader) duration(key string, def time.Duration) time.Duration {
 	if !ok || v == "" {
 		return def
 	}
-	d, err := time.ParseDuration(v) // Try to parse the handwritten variable, .env must therefore use go syntax for durations.
+	// Wherever the value comes from (the shell, the IDE, CI), it must use Go's duration syntax: a
+	// plain 15 without a unit is rejected.
+	d, err := time.ParseDuration(v)
 	if err != nil {
 		// %q quotes the variable v.
 		r.errs = append(r.errs, fmt.Errorf("%s %q is not a valid duration (examples: 500ms, 15s, 2m)", key, v))

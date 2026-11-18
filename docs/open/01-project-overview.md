@@ -47,7 +47,7 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Payments | Stripe PaymentIntents + webhooks (stripe-go) | planned (M6) |
 | Search | Elasticsearch (official go-elasticsearch client) | planned (M8) |
 | Metrics | Prometheus client | planned (M9) |
-| Testing | `testing` package, race detector; later Testcontainers, fuzzing, k6 load tests | partly in use |
+| Testing | `testing` package, race detector, Testcontainers (Postgres); later fuzzing, k6 load tests | partly in use |
 | Local infra | Docker Compose | in use (Postgres; Redis for the examples) |
 | CI | GitHub Actions | in use |
 | Gateway | Traefik, only if a real need appears | not planned |

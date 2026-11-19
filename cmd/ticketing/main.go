@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/config"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/event"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/telemetry"
@@ -84,8 +85,12 @@ func run(ctx context.Context) error {
 		"database", pool.Config().ConnConfig.Database,
 	)
 
+	// The services, created once and shared by every request. This is the hand-written version of
+	// what Spring's ApplicationContext does with @Service beans and @Autowired.
+	venues := event.NewVenueService(pool)
+
 	readiness := &httpapi.Readiness{} // Set to false as its zero value.
-	router := httpapi.NewRouter(logger, readiness, pool)
+	router := httpapi.NewRouter(logger, readiness, pool, venues)
 
 	// Open the port first, then mark the app ready: /readyz only says "ready" once we can
 	// actually accept connections.

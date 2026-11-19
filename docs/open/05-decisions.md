@@ -44,6 +44,9 @@ milestone in which they will be settled.
 | 2026-11-19 | **Transactions** go through `postgres.WithTx(ctx, pool, fn)`: commit when `fn` returns nil, roll back on an error or a panic, `fn`'s error returned unchanged. READ COMMITTED (Postgres's default); a read-change-write locks its rows with `SELECT ... FOR UPDATE`. |
 | 2026-11-19 | **Database errors:** a broken constraint is recognised by SQLSTATE code and constraint name (`postgres.IsUniqueViolation`, `IsForeignKeyViolation`, `IsCheckViolation`), so each module maps its own constraints to its own errors; "not found" is `pgx.ErrNoRows`. The module errors themselves (e.g. venue not found) arrive with the services that return them (step 5). |
 | 2026-11-19 | **Lists use keyset pagination** (`WHERE (sort key, id) > (last values) ORDER BY ... LIMIT`), not `OFFSET`: every page costs the same and rows added meanwhile don't shift pages. Venues are listed by name, then id, with an index on `(name, id)` (migration 2). |
+| 2026-11-20 | **Module layers:** handler (`httpapi`) → service (e.g. `event.VenueService`) → sqlc queries → Postgres. No repository layer of our own: the generated `Queries` already is one, and Postgres code is tested against real Postgres, not mocks. |
+| 2026-11-20 | **Services return the module's own types** (e.g. `event.Venue`), converted from the generated row in one function, so `httpapi` never imports a `...db` package and a new column doesn't change a service's API. Not found is a module error (`event.ErrVenueNotFound`), not `pgx.ErrNoRows`. |
+| 2026-11-20 | **HTTP errors are RFC 9457 Problem Details** (`application/problem+json`, the format Spring Boot 3's `ProblemDetail` uses), the same for every endpoint; validation errors list each field's problem. **Validation errors are 400 Bad Request**, like malformed JSON; 500s carry no detail, which goes only to the log. Built in M1 step 5b. |
 
 ## Open
 

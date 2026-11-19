@@ -32,10 +32,11 @@ func (f *fakeDatabase) Ping(ctx context.Context) error {
 }
 
 // newTestRouter builds a router with a healthy fake database, whose logs are thrown away
-// (io.Discard), so test output stays clean.
+// (io.Discard), so test output stays clean. It has no venue service (nil): the tests using it
+// never call a venue route. Venue routes are tested with a real one in venues_test.go.
 func newTestRouter(readiness *Readiness) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(logger, readiness, &fakeDatabase{})
+	return NewRouter(logger, readiness, &fakeDatabase{}, nil)
 }
 
 // get sends a GET request to handler in memory, without opening a real port, and returns the
@@ -84,7 +85,7 @@ func TestReadyz_ChecksTheDatabaseWithATimeout(t *testing.T) {
 	database := &fakeDatabase{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	rec := get(t, NewRouter(logger, readiness, database), "/readyz")
+	rec := get(t, NewRouter(logger, readiness, database, nil), "/readyz")
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status: got %d, want %d", rec.Code, http.StatusOK)
@@ -107,7 +108,7 @@ func TestReadyz_NotReadyWhenTheDatabaseFails(t *testing.T) {
 	}
 	database := &fakeDatabase{err: errors.New("connection refused")}
 
-	rec := get(t, NewRouter(logger, readiness, database), "/readyz")
+	rec := get(t, NewRouter(logger, readiness, database, nil), "/readyz")
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status: got %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -128,7 +129,7 @@ func TestReadyz_SkipsTheDatabaseWhileNotReady(t *testing.T) {
 	database := &fakeDatabase{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	rec := get(t, NewRouter(logger, &Readiness{}, database), "/readyz")
+	rec := get(t, NewRouter(logger, &Readiness{}, database, nil), "/readyz")
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status: got %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -143,7 +144,7 @@ func TestHealthz_IgnoresTheDatabase(t *testing.T) {
 	database := &fakeDatabase{err: errors.New("connection refused")}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	rec := get(t, NewRouter(logger, &Readiness{}, database), "/healthz")
+	rec := get(t, NewRouter(logger, &Readiness{}, database, nil), "/healthz")
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status: got %d, want %d", rec.Code, http.StatusOK)
@@ -161,7 +162,7 @@ func newLoggingRouter(t *testing.T, logs *bytes.Buffer) *gin.Engine {
 	if err != nil {
 		t.Fatalf("NewLogger: unexpected error: %v", err)
 	}
-	return NewRouter(logger, &Readiness{}, &fakeDatabase{})
+	return NewRouter(logger, &Readiness{}, &fakeDatabase{}, nil)
 }
 
 // logEntry is one parsed JSON log line; only the fields the tests check are listed.

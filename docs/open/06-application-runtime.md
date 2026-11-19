@@ -19,8 +19,9 @@ or 0 after a clean shutdown. `main` is the only place that calls `os.Exit`.
 4. **Postgres:** `postgres.NewPool` creates the connection pool and pings the database, allowing
    5 seconds. If it can't connect, `run` fails here, before the port is opened. A deferred `Close()`
    closes the pool last, after the HTTP server. Then it logs `connected to postgres`.
-5. **Readiness and router:** a `httpapi.Readiness` (starts as not ready) and `httpapi.NewRouter`,
-   which also gets the pool for the `/readyz` check.
+5. **Services, readiness and router:** the module services on the pool (`event.NewVenueService`),
+   a `httpapi.Readiness` (starts as not ready) and `httpapi.NewRouter`, which gets the services
+   and also the pool for the `/readyz` check.
 6. **Listener:** `net.Listen("tcp", HTTP_ADDR)` opens the port. If the port is taken, `run` fails
    here.
 7. **Server:** an `http.Server` with the router as its handler and all timeouts from config.
@@ -113,6 +114,44 @@ Unknown routes get Gin's default `404 page not found`.
 |---|---|---|---|
 | GET | `/healthz` | `200 {"status":"ok"}` | **Liveness:** the process is alive. Always 200; it never checks dependencies, because restarting the app doesn't fix a database outage. |
 | GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready as soon as shutdown starts, or while Postgres doesn't answer a ping within 2 seconds. The reason is logged as `readiness check failed`, never sent to the client. It recovers by itself when Postgres returns. |
+| GET | `/api/v1/admin/venues/{id}` | `200` with the venue, or `404` (no venue has this id, or the id isn't a UUID) | **Read a venue.** Admin API, no authentication until M2. |
+
+### Admin API
+
+The admin routes are one Gin route group under `/api/v1/admin`, so M2 can add authentication to
+all of them in one place. A request goes handler → service → generated queries → Postgres; the
+handler only translates between HTTP and the service.
+
+A venue looks like this. Names are snake_case, optional values are `null` (never left out), times
+are RFC 3339 in UTC:
+
+```json
+{
+  "id": "4851a6ac-f32c-4b12-a9d6-465900e510b1",
+  "name": "Volkswagen Arena",
+  "description": null,
+  "address": {
+    "line1": "Huzur Mah. Azerbaycan Cad. 1", "line2": null, "city": "Istanbul",
+    "region": null, "postal_code": null, "country_code": "TR"
+  },
+  "location": {"latitude": 41.108934, "longitude": 29.010547},
+  "time_zone": "Europe/Istanbul",
+  "capacity": 5000,
+  "created_at": "2026-11-19T22:41:42.814925Z",
+  "updated_at": "2026-11-19T22:41:42.814925Z"
+}
+```
+
+Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
+application/problem+json`:
+
+```json
+{"type":"about:blank","title":"Not Found","status":404,"detail":"venue not found","instance":"/api/v1/admin/venues/abc"}
+```
+
+An unexpected error (e.g. the database fails) is a `500` without `detail`; the cause is logged as
+`request failed` at ERROR, with the request ID. The `/healthz` and `/readyz` bodies, Gin's
+`404 page not found` for unknown routes and the recovery middleware's 500 don't use this format yet.
 
 ## Logging
 

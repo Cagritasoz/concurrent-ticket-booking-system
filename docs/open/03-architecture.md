@@ -12,13 +12,15 @@
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── event/                       # MODULE: venues so far (events, tiers, tickets later in M1)
+│   │   ├── venue.go                 # Venue (the module's own type), ErrVenueNotFound, row → Venue
+│   │   ├── venue_service.go         # VenueService: the venue rules, on top of the generated queries
 │   │   ├── queries/venues.sql       # the SQL sqlc reads
 │   │   └── eventdb/                 # sqlc-generated (db.go, models.go, venues.sql.go) + hand-written tests
 │   ├── platform/
 │   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
-│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness
+│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, Problem Details errors
 ├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
@@ -50,7 +52,8 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   │   ├── elastic/                 # (planned, M8) client constructor
 │   │   └── telemetry/               # slog setup, request IDs; Prometheus registry later (M9)
 │   ├── auth/                        # (planned, M2) OIDC verifier, Principal{Subject, Roles}, ctx helpers (no Gin)
-│   ├── event/                       # MODULE: venues, events, price tiers, tickets (venue queries exist; the rest M1)
+│   ├── event/                       # MODULE: venues, events, price tiers, tickets (venue service started; the rest M1)
+│   │   ├── venue.go venue_service.go ...  # the module's types, errors and services
 │   │   ├── queries/*.sql
 │   │   └── eventdb/                 # sqlc-generated
 │   ├── booking/                     # (planned, M3–M7) MODULE: holds, bookings, idempotency, payments, webhooks, reconciliation

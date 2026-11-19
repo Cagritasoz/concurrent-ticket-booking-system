@@ -8,6 +8,8 @@ import (
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/event"
 )
 
 // init runs once, automatically, when the package is loaded (like a static {} block in Java).
@@ -17,8 +19,9 @@ func init() {
 	gin.SetMode(gin.ReleaseMode)
 }
 
-// NewRouter builds the Gin engine with its middleware and routes.
-func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger) *gin.Engine {
+// NewRouter builds the Gin engine with its middleware and routes. The services are passed in
+// ready-made (created in cmd/ticketing), like beans injected into a controller's constructor.
+func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger, venues *event.VenueService) *gin.Engine {
 	// gin.New() starts with no middleware. gin.Default() would add Gin's own logger and recovery,
 	// which write plain text to the console. We add our own so every log line goes through slog.
 	router := gin.New()
@@ -45,6 +48,14 @@ func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger) *gin.
 	// We can think of it like spring's controller method.
 	router.GET("/healthz", healthz)
 	router.GET("/readyz", readyz(readiness, database, logger))
+
+	// The admin API. A route group shares its path prefix (like @RequestMapping on a controller
+	// class) and can get its own middleware: M2 adds authentication to this group only.
+	admin := router.Group("/api/v1/admin")
+	venueRoutes := venueHandler{service: venues, logger: logger}
+	// venueRoutes.get is a "method value": the method bound to this venueRoutes, passed without
+	// calling it, so Gin can call it per request like the functions above.
+	admin.GET("/venues/:id", venueRoutes.get)
 
 	return router
 }

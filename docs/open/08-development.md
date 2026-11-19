@@ -157,6 +157,21 @@ curl -i http://localhost:8080/readyz
 curl -i -H "X-Request-ID: my-trace-42" http://localhost:8080/healthz
 ```
 
+There is no endpoint to create venues yet, so add one by hand (e.g. in `psql`) and read it back
+with the id it returns:
+
+```sql
+INSERT INTO venues (name, address_line1, city, country_code, timezone)
+VALUES ('Volkswagen Arena', 'Huzur Mah. Azerbaycan Cad. 1', 'Istanbul', 'TR', 'Europe/Istanbul')
+RETURNING id;
+```
+
+```bash
+curl -i http://localhost:8080/api/v1/admin/venues/{id}
+```
+
+On Windows PowerShell, `curl` is an alias of `Invoke-WebRequest`; use `curl.exe` for the real one.
+
 On Windows PowerShell, `$env:LOG_FORMAT="text"` sets a variable for that terminal session, so it also
 applies to later commands there.
 

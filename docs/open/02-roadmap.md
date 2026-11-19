@@ -9,7 +9,10 @@
 - **Done in M1:** step 1 (Postgres in Docker Compose, connection pool, `/readyz` checks Postgres),
   step 2 (golang-migrate, `cmd/migrate`, the `venues` table), step 3 (tests start their own
   Postgres with Testcontainers), step 4 (sqlc venue queries, `WithTx`, constraint error checks).
-- **Next:** M1 step 5, the first REST endpoints: the venue service and its admin CRUD handlers.
+- **In progress:** M1 steps 5a and 5b, built one operation at a time through every layer. Reading
+  a venue works end to end: `GET /api/v1/admin/venues/{id}` → handler → `event.VenueService.Get`
+  → generated query → Postgres, with Problem Details errors.
+- **Next:** create, list, update and delete venues (service with validation, then handlers).
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -76,7 +79,7 @@ See [Application runtime](06-application-runtime.md) for how these pieces work t
 
 M1 gives the app a database and the admin side of the system: an admin describes a venue and its
 layouts, creates an event in one of those layouts with ticket tiers, and publishes it, which creates
-the tickets that M3 will sell. The first REST endpoints arrive in step 5; steps 1–4 build what they
+the tickets that M3 will sell. The first REST endpoints arrive in step 5b; steps 1–5a build what they
 stand on. Every step includes its tests.
 
 The model aims to match real ticketing platforms:
@@ -97,7 +100,8 @@ standing section. Every ticket has a place: a seat, or a standing section.
 | 2 | golang-migrate: a `migrations/` folder, `make migrate-up` and `make migrate-down`, the first table (`venues`: name, description, address, optional coordinates, time zone, optional capacity) | Flyway | Done |
 | 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Done |
 | 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; broken constraints recognised by name, for modules to map to their own errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Done |
-| 5 | **First REST endpoints:** venue service and CRUD handlers under `/api/v1/admin`; request validation; the venue's domain errors (e.g. not found); one JSON error format; domain error → HTTP status mapping | `@RestController` + Bean Validation + `@ControllerAdvice` | Next |
+| 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | In progress (get done) |
+| 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | In progress (get done) |
 | 6 | Layouts and sections: a venue's layouts; each layout's sections, either seated or standing with a capacity | Child entities + nested endpoints | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
 | 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of its venue | Another `@RestController` + service | Not started |
@@ -139,6 +143,19 @@ standing section. Every ticket has a place: a seat, or a standing section.
   through equal names, each WithTx outcome (a failing commit included) and each error check; 20
   concurrent read-change-write transactions lose no update with `FOR UPDATE` (without it, 15 of 20
   were lost). CI checks the generated code with `sqlc diff`.
+- **Step 5a (in progress):** `event.VenueService` with `Get`, built on the generated queries
+  (no repository layer of its own). It returns the module's own `event.Venue` (address grouped,
+  coordinates as one optional `Location`, capacity as `*int`), converted from the row in one
+  place, so `httpapi` will never import `eventdb`. An unknown id is `event.ErrVenueNotFound`; any
+  other database error is wrapped and passed on. Tests against real Postgres: every field read
+  back, optional fields `nil`, unknown id, and a failing database that isn't reported as "not
+  found".
+- **Step 5b (in progress):** `GET /api/v1/admin/venues/{id}` in an `/api/v1/admin` route group,
+  wired in `cmd/ticketing` (`event.NewVenueService(pool)` → `httpapi.NewRouter`). The JSON form
+  of a venue lives in `httpapi` (snake_case, optional values `null`, times in UTC). Errors are RFC
+  9457 Problem Details (`application/problem+json`): an unknown or malformed id is 404, any other
+  error a 500 without detail, logged with the request ID. Tests send requests through the whole
+  stack (router, handler, real service, real Postgres) and compare the exact JSON.
 
 ### Planned M1 endpoints
 
@@ -146,7 +163,7 @@ Paths are under `/api/v1/admin`. They are a plan and can change when each step i
 
 | Step | Method and path | Action |
 |---|---|---|
-| 5 | `POST /venues`, `GET /venues`, `GET /venues/{id}`, `PATCH /venues/{id}`, `DELETE /venues/{id}` | Manage venues |
+| 5b | `POST /venues`, `GET /venues`, `GET /venues/{id}`, `PATCH /venues/{id}`, `DELETE /venues/{id}` | Manage venues |
 | 6 | `POST /venues/{id}/layouts`, `GET /venues/{id}/layouts`, `GET /layouts/{id}`, `PATCH /layouts/{id}`, `DELETE /layouts/{id}` | Manage a venue's layouts |
 | 6 | `POST /layouts/{id}/sections`, `GET /layouts/{id}/sections`, `PATCH /sections/{id}`, `DELETE /sections/{id}` | Manage a layout's sections |
 | 7 | `POST /sections/{id}/seats`, `GET /sections/{id}/seats`, `PATCH /seats/{id}`, `DELETE /seats/{id}` | Manage a seated section's seats; `POST` creates whole rows at once |

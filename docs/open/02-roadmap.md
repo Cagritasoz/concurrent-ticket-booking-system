@@ -8,8 +8,8 @@
   Makefile, lint config and CI workflow).
 - **Done in M1:** step 1 (Postgres in Docker Compose, connection pool, `/readyz` checks Postgres),
   step 2 (golang-migrate, `cmd/migrate`, the `venues` table), step 3 (tests start their own
-  Postgres with Testcontainers).
-- **Next:** M1 step 4, sqlc, the `WithTx` transaction helper and the first venue queries.
+  Postgres with Testcontainers), step 4 (sqlc venue queries, `WithTx`, constraint error checks).
+- **Next:** M1 step 5, the first REST endpoints: the venue service and its admin CRUD handlers.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -96,8 +96,8 @@ standing section. Every ticket has a place: a seat, or a standing section.
 | 1 | Postgres in Docker Compose; `DATABASE_URL` in config and `.env.example`; connection pool in `internal/platform/postgres`; `/readyz` also checks Postgres; the pool closes on shutdown | `spring.datasource.*` + HikariCP + Actuator DB health | Done |
 | 2 | golang-migrate: a `migrations/` folder, `make migrate-up` and `make migrate-down`, the first table (`venues`: name, description, address, optional coordinates, time zone, optional capacity) | Flyway | Done |
 | 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Done |
-| 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; Postgres errors mapped to domain errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Next |
-| 5 | **First REST endpoints:** venue service and CRUD handlers under `/api/v1/admin`; request validation; one JSON error format; domain error → HTTP status mapping | `@RestController` + Bean Validation + `@ControllerAdvice` | Not started |
+| 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; broken constraints recognised by name, for modules to map to their own errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Done |
+| 5 | **First REST endpoints:** venue service and CRUD handlers under `/api/v1/admin`; request validation; the venue's domain errors (e.g. not found); one JSON error format; domain error → HTTP status mapping | `@RestController` + Bean Validation + `@ControllerAdvice` | Next |
 | 6 | Layouts and sections: a venue's layouts; each layout's sections, either seated or standing with a capacity | Child entities + nested endpoints | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
 | 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of its venue | Another `@RestController` + service | Not started |
@@ -130,6 +130,15 @@ standing section. Every ticket has a place: a seat, or a standing section.
   tests; without Docker or `TEST_DATABASE_URL` they fail instead of skipping. All tests that used
   `TEST_DATABASE_URL` directly now go through `pgtest`, and CI's tests use Testcontainers too (its
   Postgres service remains for the migration targets).
+- **Step 4:** sqlc v1.31.1 (`sqlc.yaml`, `make generate`) turns `internal/event/queries/venues.sql`
+  into `internal/event/eventdb`: create, get, get-and-lock (`FOR UPDATE`), a keyset-paginated list
+  by name (with an index from migration 2), update and delete. Standard Go types in the generated
+  code (`uuid.UUID`, `time.Time`, pointers for `NULL`). `postgres.WithTx` commits or rolls back
+  (also on a panic); `postgres.IsUniqueViolation`, `IsForeignKeyViolation` and `IsCheckViolation`
+  recognise a broken constraint by name. Tests against real Postgres cover every query, paging
+  through equal names, each WithTx outcome (a failing commit included) and each error check; 20
+  concurrent read-change-write transactions lose no update with `FOR UPDATE` (without it, 15 of 20
+  were lost). CI checks the generated code with `sqlc diff`.
 
 ### Planned M1 endpoints
 

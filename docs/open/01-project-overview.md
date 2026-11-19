@@ -40,7 +40,7 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Language | Go 1.27, module `github.com/Cagritasoz/concurrent-ticket-booking-system` | in use |
 | HTTP | Gin v1.12.0, only inside the HTTP layer | in use |
 | Logging | `log/slog` (standard library), JSON to stdout | in use |
-| Database | PostgreSQL 17 via pgx + sqlc (type-safe Go generated from SQL) | pgx connection pool in use; sqlc planned (M1) |
+| Database | PostgreSQL 17 via pgx + sqlc (type-safe Go generated from SQL) | in use (pgx v5.12.0, sqlc v1.31.1) |
 | Migrations | golang-migrate v4.20.1, plain SQL files run by `cmd/migrate` | in use |
 | Auth | Keycloak via OIDC (coreos/go-oidc); never a custom identity provider | planned (M2) |
 | Holds / cache | Redis (`SET NX` with expiry), never the only correctness mechanism | planned (M5) |

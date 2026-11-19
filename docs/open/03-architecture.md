@@ -11,18 +11,22 @@
 │   └── migrate/main.go              # migration command: up, down, version, force
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
+│   ├── event/                       # MODULE: venues so far (events, tiers, tickets later in M1)
+│   │   ├── queries/venues.sql       # the SQL sqlc reads
+│   │   └── eventdb/                 # sqlc-generated (db.go, models.go, venues.sql.go) + hand-written tests
 │   ├── platform/
-│   │   ├── postgres/                # connection pool setup (pgxpool), Migrator (golang-migrate)
+│   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
 │   └── httpapi/                     # Gin router, middleware, health handlers, Readiness
 ├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
+├── sqlc.yaml                        # sqlc settings: schema from migrations/, queries per module, Go types
 ├── docker-compose.yaml              # Postgres; Redis + redis-commander (used by the examples)
-├── Makefile                         # short commands: make test, make lint, make check, ...
+├── Makefile                         # short commands: make test, make lint, make check, make generate, ...
 ├── .golangci.yml                    # golangci-lint configuration
-├── .github/workflows/ci.yaml        # GitHub Actions: lint, test, build
+├── .github/workflows/ci.yaml        # GitHub Actions: lint, sqlc diff, test, migrations, build
 ├── .gitattributes                   # keeps Go files LF on Windows
 ├── .env.example                     # documented example configuration
 └── go.mod / go.sum
@@ -40,13 +44,13 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 ├── internal/
 │   ├── config/                      # env vars → typed Config + Validate()
 │   ├── platform/                    # infrastructure client setup ONLY, no business rules
-│   │   ├── postgres/                # pgxpool, Migrator; (planned, M1) WithTx helper, pg error mapping (23505 → domain error)
+│   │   ├── postgres/                # pgxpool, Migrator, WithTx, constraint error checks (e.g. IsUniqueViolation)
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL), optionally migrated
 │   │   ├── redis/                   # (planned, M5) client constructor (returns an error, never exits)
 │   │   ├── elastic/                 # (planned, M8) client constructor
 │   │   └── telemetry/               # slog setup, request IDs; Prometheus registry later (M9)
 │   ├── auth/                        # (planned, M2) OIDC verifier, Principal{Subject, Roles}, ctx helpers (no Gin)
-│   ├── event/                       # (planned, M1) MODULE: venues, events, price tiers, tickets
+│   ├── event/                       # MODULE: venues, events, price tiers, tickets (venue queries exist; the rest M1)
 │   │   ├── queries/*.sql
 │   │   └── eventdb/                 # sqlc-generated
 │   ├── booking/                     # (planned, M3–M7) MODULE: holds, bookings, idempotency, payments, webhooks, reconciliation
@@ -60,7 +64,7 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   └── httpapi/                     # Gin: router, middleware, handlers, error → status mapping, health
 ├── examples/                        # early learning code, not part of the app
 ├── migrations/                      # golang-migrate files, shared by all modules (one schema history)
-├── sqlc.yaml                        # (planned, M1)
+├── sqlc.yaml
 ├── dev/keycloak/realm.json          # (planned, M2)
 ├── loadtest/                        # (planned, M9) k6 scripts
 ├── docs/open/                       # documentation

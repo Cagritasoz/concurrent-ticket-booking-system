@@ -8,7 +8,8 @@
 | A C compiler (`gcc`) | the race detector (`-race`) needs cgo, and cgo needs a C compiler | Windows: MSYS2, then `pacman -S mingw-w64-ucrt-x86_64-gcc` and add `C:\msys64\ucrt64\bin` to PATH. macOS: `xcode-select --install`. Linux: `build-essential`. |
 | GNU `make` | the Makefile | Windows: `pacman -S make` in MSYS2 and add `C:\msys64\usr\bin` to the **end** of PATH (it contains Unix tools such as `find.exe` that would otherwise hide the Windows ones). |
 | `golangci-lint` v2.15.0 | linting | Install the official binary into `$(go env GOPATH)/bin`, e.g. `curl -sSfL https://golangci-lint.run/install.sh \| sh -s -- -b "$(go env GOPATH)/bin" v2.15.0` (from a POSIX shell such as Git Bash). |
-| Docker Desktop | local infrastructure, and the Postgres the tests start with Testcontainers | Check with `docker ps`. |
+| `sqlc` v1.31.1 | generates Go from the SQL queries (`make generate`) | `go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1` puts it into `$(go env GOPATH)/bin`. On Windows the build takes a few minutes (it compiles a WebAssembly build of the Postgres parser) and needs nothing else. Only needed when changing queries or migrations: the generated code is committed. |
+| Docker Desktop | local infrastructure, and the Postgres the tests start with Testcontainers | Check with `docker ps`. If it isn't running, the Postgres tests fail with "is Docker running?" (Testcontainers' own text in that message, "rootless Docker is not supported on Windows", is misleading). |
 
 If `go test -race` reports `-race requires cgo; enable cgo by setting CGO_ENABLED=1`, Go found no
 C compiler on PATH and turned cgo off. Install one, open a new terminal, and if
@@ -41,6 +42,7 @@ make migrate-up
 make                # list the targets below
 make run            # start the app on :8080
 make build          # compile the app into bin/ (ignored by git)
+make generate       # generate Go code from the SQL queries with sqlc
 make test           # all of the application's tests, race detector on (needs Docker running)
 make test-short     # only the tests that need no Postgres (no Docker needed)
 make lint           # golangci-lint, including go vet and format checks
@@ -79,7 +81,9 @@ Go counterpart of Flyway). `schema_migrations` records the current version, like
    `000002_create_venue_layouts.up.sql` and `000002_create_venue_layouts.down.sql`.
 2. The up file makes the change; the down file undoes exactly that change.
 3. Check both directions: `make migrate-up`, `make migrate-down`, `make migrate-up`.
-4. `make test` checks the naming rules and runs every migration up, down and up again against a
+4. Run `make generate`: sqlc reads the migrations as its schema, so a changed table changes the
+   generated structs.
+5. `make test` checks the naming rules and runs every migration up, down and up again against a
    fresh database.
 
 **Rules:**
@@ -98,14 +102,52 @@ the database, fix the file, and run `make migrate-force version=N` with the vers
 applied, which is not always the dirty version shown (like Flyway's `repair`). Every case, and how
 to choose N, is in [11 · Migration failures and recovery](11-migration-recovery.md).
 
+## Database queries (sqlc)
+
+Queries are plain SQL in each module's `queries/` folder (today `internal/event/queries`). sqlc
+reads them together with the migrations and generates Go code into the module's `...db` package
+(`internal/event/eventdb`): a struct per table (`eventdb.Venue`), a parameter struct per query and
+one method per query on `eventdb.Queries`. Wrong SQL, an unknown column or a type mismatch fails
+at `make generate`, before anything runs. `sqlc.yaml` explains the settings and the comment syntax.
+
+**Adding or changing a query:**
+
+1. Write it in the queries file, starting with `-- name: MethodName :one` (or `:many`, `:exec`,
+   `:execrows`), then a comment explaining it, which becomes the method's Go comment.
+2. `make generate`, and commit the SQL and the generated files together. Never edit the generated
+   files; CI runs `sqlc diff` and fails if they don't match.
+3. Test it against real Postgres, next to the generated code (`internal/event/eventdb/*_test.go`).
+
+**Using the queries:** `eventdb.New(pool)` runs each query on its own; inside a transaction use
+`postgres.WithTx`, which commits when the function returns nil and rolls back on an error or a
+panic:
+
+```go
+err := postgres.WithTx(ctx, pool, func(tx pgx.Tx) error {
+	q := eventdb.New(tx)
+	venue, err := q.GetVenueForUpdate(ctx, id) // locks the row until the transaction ends
+	if err != nil {
+		return err
+	}
+	// change venue, then q.UpdateVenue(ctx, ...)
+	return nil
+})
+```
+
+**Errors:** a query that finds no row returns `pgx.ErrNoRows` (check with `errors.Is`). A broken
+constraint is recognised by its name with `postgres.IsUniqueViolation`, `IsForeignKeyViolation`
+or `IsCheckViolation`, so the module can return its own error for it. Postgres names constraints
+`table_column_key`, `_fkey` and `_check` unless the migration names them with `CONSTRAINT`.
+
 ## Continuous integration
 
 `.github/workflows/ci.yaml` runs on GitHub Actions for every push to `main` or a `milestone/**`
 branch and for pull requests into `main`. It installs the Go version from `go.mod`, then runs lint,
-`make test` (whose Postgres tests start their own container with Testcontainers, as locally), the
+`sqlc diff` (the committed generated code matches the queries; the sqlc version is pinned like
+golangci-lint's), `make test` (whose Postgres tests start their own container with Testcontainers, as locally), the
 migration targets (up, down, up) against a throwaway Postgres service, and `make build`;
-`make check` covers the lint and test parts locally. `examples/` is not part of CI. Its golangci-lint version is pinned, so when upgrading, change it in the workflow
-and in the prerequisites above together.
+`make check` covers the lint and test parts locally. `examples/` is not part of CI. The golangci-lint and sqlc versions are pinned, so when upgrading one, change it in
+the workflow and in the prerequisites above together (and run `make generate` for sqlc).
 
 Try the endpoints while the app runs:
 

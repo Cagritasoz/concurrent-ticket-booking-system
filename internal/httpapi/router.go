@@ -55,6 +55,7 @@ func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger, venue
 	venueRoutes := venueHandler{service: venues, logger: logger}
 	// venueRoutes.get is a "method value": the method bound to this venueRoutes, passed without
 	// calling it, so Gin can call it per request like the functions above.
+	admin.POST("/venues", venueRoutes.create)
 	admin.GET("/venues/:id", venueRoutes.get)
 
 	return router

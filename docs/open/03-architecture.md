@@ -13,14 +13,15 @@
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── event/                       # MODULE: venues so far (events, tiers, tickets later in M1)
 │   │   ├── venue.go                 # Venue (the module's own type), ErrVenueNotFound, row → Venue
-│   │   ├── venue_service.go         # VenueService: the venue rules, on top of the generated queries
+│   │   ├── venue_input.go           # VenueInput, its validation, ValidationError / FieldError
+│   │   ├── venue_service.go         # VenueService (Get, Create) on top of the generated queries
 │   │   ├── queries/venues.sql       # the SQL sqlc reads
 │   │   └── eventdb/                 # sqlc-generated (db.go, models.go, venues.sql.go) + hand-written tests
 │   ├── platform/
 │   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
-│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, Problem Details errors
+│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, strict JSON decoding, Problem Details errors
 ├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation

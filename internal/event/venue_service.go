@@ -43,3 +43,46 @@ func (s *VenueService) Get(ctx context.Context, id uuid.UUID) (Venue, error) {
 	}
 	return toVenue(row), nil
 }
+
+// Create checks the input and stores it as a new venue. Invalid input returns a
+// *ValidationError listing every problem, and nothing is stored.
+func (s *VenueService) Create(ctx context.Context, in VenueInput) (Venue, error) {
+	// in is replaced by its cleaned version (trimmed, blank optional text as nil). := is allowed
+	// because err is new; in is the parameter, assigned again.
+	in, err := in.clean()
+	if err != nil {
+		return Venue{}, err
+	}
+
+	row, err := s.queries.CreateVenue(ctx, toCreateParams(in))
+	if err != nil {
+		// clean checks every rule the table's CHECKs enforce. If Postgres still rejects the
+		// input, clean has a bug, which is our fault (500), not the caller's, so it is not turned
+		// into a ValidationError.
+		return Venue{}, fmt.Errorf("create venue: %w", err)
+	}
+	return toVenue(row), nil
+}
+
+// toCreateParams is toVenue in reverse: the input as the generated query's parameters.
+func toCreateParams(in VenueInput) eventdb.CreateVenueParams {
+	p := eventdb.CreateVenueParams{
+		Name:         in.Name,
+		Description:  in.Description,
+		AddressLine1: in.Address.Line1,
+		AddressLine2: in.Address.Line2,
+		City:         in.Address.City,
+		Region:       in.Address.Region,
+		PostalCode:   in.Address.PostalCode,
+		CountryCode:  in.Address.CountryCode,
+		Timezone:     in.TimeZone,
+	}
+	if in.Location != nil {
+		p.Latitude = new(in.Location.Latitude)
+		p.Longitude = new(in.Location.Longitude)
+	}
+	if in.Capacity != nil {
+		p.Capacity = new(int32(*in.Capacity)) // clean checked that it fits in an int32
+	}
+	return p
+}

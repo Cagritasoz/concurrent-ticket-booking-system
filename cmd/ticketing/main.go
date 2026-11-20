@@ -17,6 +17,12 @@ import (
 	"syscall"
 	"time"
 
+	// The time zone database, embedded into the binary (about 450 KB). event checks venue time
+	// zones with time.LoadLocation, which otherwise needs the operating system's copy: Windows
+	// and minimal container images have none. The _ imports the package only for this side
+	// effect; nothing in it is called.
+	_ "time/tzdata"
+
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/config"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/event"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"

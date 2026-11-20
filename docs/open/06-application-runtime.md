@@ -114,6 +114,7 @@ Unknown routes get Gin's default `404 page not found`.
 |---|---|---|---|
 | GET | `/healthz` | `200 {"status":"ok"}` | **Liveness:** the process is alive. Always 200; it never checks dependencies, because restarting the app doesn't fix a database outage. |
 | GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready as soon as shutdown starts, or while Postgres doesn't answer a ping within 2 seconds. The reason is logged as `readiness check failed`, never sent to the client. It recovers by itself when Postgres returns. |
+| POST | `/api/v1/admin/venues` | `201` with the venue and a `Location` header, or `400` / `413` / `415` | **Create a venue.** Admin API, no authentication until M2. |
 | GET | `/api/v1/admin/venues/{id}` | `200` with the venue, or `404` (no venue has this id, or the id isn't a UUID) | **Read a venue.** Admin API, no authentication until M2. |
 
 ### Admin API
@@ -142,6 +143,27 @@ are RFC 3339 in UTC:
 }
 ```
 
+**Creating a venue:** the request body has the same shape without `id`, `created_at` and
+`updated_at`. Required: `name`, `address.line1`, `address.city`, `address.country_code` and
+`time_zone`; every other field may be left out or `null`. The service trims surrounding
+whitespace from text, and optional text that is empty after trimming is stored as `null`. The
+rules (checked in `event`, before Postgres sees the input):
+
+| Field | Rule |
+|---|---|
+| `name`, `address.line1`, `address.line2` | at most 200 characters |
+| `description` | at most 5000 characters |
+| `address.city`, `address.region` | at most 100 characters |
+| `address.postal_code` | at most 20 characters |
+| `address.country_code` | two capital letters (the shape of an ISO 3166-1 alpha-2 code; whether the code is assigned is not checked) |
+| `location` | both `latitude` (-90 to 90) and `longitude` (-180 to 180); 6 decimals are kept |
+| `time_zone` | a name in the IANA time zone database, e.g. `Europe/Istanbul` (the binary embeds the database, `time/tzdata`) |
+| `capacity` | a whole number from 1 to 2147483647 |
+
+The body is read strictly: `Content-Type` must be `application/json`, the body at most 64 KiB, one
+JSON object with no unknown fields (a typo like `capcity` is an error, not ignored) and nothing
+after it.
+
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
 
@@ -149,8 +171,17 @@ application/problem+json`:
 {"type":"about:blank","title":"Not Found","status":404,"detail":"venue not found","instance":"/api/v1/admin/venues/abc"}
 ```
 
-An unexpected error (e.g. the database fails) is a `500` without `detail`; the cause is logged as
-`request failed` at ERROR, with the request ID. The `/healthz` and `/readyz` bodies, Gin's
+| Status | When | `detail` |
+|---|---|---|
+| `400` | invalid fields | "the request has invalid fields; see errors", plus an `errors` list with every problem at once: `[{"field":"address.city","message":"is required"}, ...]`. `field` is the path in the JSON. |
+| `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "capcity"` or `capacity must be a whole number` |
+| `404` | no venue has the id, or the id isn't a UUID | "venue not found" |
+| `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
+| `415` | `Content-Type` isn't `application/json` | what to send instead |
+| `500` | anything unexpected, e.g. the database fails | none; the cause is logged as `request failed` at ERROR, with the request ID |
+
+A missing `location.latitude` or `location.longitude` is checked in the handler, before the
+service, so it is reported on its own, before the other field problems. The `/healthz` and `/readyz` bodies, Gin's
 `404 page not found` for unknown routes and the recovery middleware's 500 don't use this format yet.
 
 ## Logging

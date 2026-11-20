@@ -40,17 +40,95 @@ func (h venueHandler) get(c *gin.Context) {
 	c.JSON(http.StatusOK, toVenueResponse(venue))
 }
 
+// create handles POST /api/v1/admin/venues. It answers 201 Created with the new venue and its
+// URL in the Location header, like Spring's ResponseEntity.created(uri).body(venue).
+func (h venueHandler) create(c *gin.Context) {
+	var req venueRequest
+	if !decodeJSON(c, &req) {
+		return // decodeJSON has written the problem response
+	}
+	in, problems := req.toInput()
+	if len(problems) > 0 { // at least one problem
+		writeValidationProblem(c, problems)
+		return
+	}
+
+	venue, err := h.service.Create(c.Request.Context(), in)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	// c.FullPath() is the route's path pattern, here "/api/v1/admin/venues".
+	c.Header("Location", c.FullPath()+"/"+venue.ID.String())
+	c.JSON(http.StatusCreated, toVenueResponse(venue))
+}
+
 // writeError turns an error from the service into a response, like an @ExceptionHandler in a
 // @ControllerAdvice. Errors the module defines get their status; anything else is a 500 whose
 // cause is logged but never sent, since it may show internals (SQL, hosts).
 func (h venueHandler) writeError(c *gin.Context, err error) {
+	var invalid *event.ValidationError
 	switch {
+	case errors.As(err, &invalid): // errors.As also fills invalid, so its Fields can be sent
+		writeValidationProblem(c, invalid.Fields)
 	case errors.Is(err, event.ErrVenueNotFound):
 		writeProblem(c, http.StatusNotFound, err.Error())
 	default: // Handle unexpected errors.
 		h.logger.ErrorContext(c.Request.Context(), "request failed", "error", err)
 		writeProblem(c, http.StatusInternalServerError, "")
 	}
+}
+
+// venueRequest is the JSON body of POST /venues. A missing field decodes as its zero value: ""
+// for a required text (which the service reports as "is required") and nil for an optional one.
+// null does the same.
+type venueRequest struct {
+	Name        string           `json:"name"`
+	Description *string          `json:"description"`
+	Address     addressJSON      `json:"address"`
+	Location    *locationRequest `json:"location"`
+	TimeZone    string           `json:"time_zone"`
+	Capacity    *int             `json:"capacity"`
+}
+
+// locationRequest has pointers so a missing latitude or longitude can be told apart from 0,
+// which is a real position (the equator, the prime meridian).
+type locationRequest struct {
+	Latitude  *float64 `json:"latitude"`
+	Longitude *float64 `json:"longitude"`
+}
+
+// toInput converts the request into the service's input. The one rule checked here is that a
+// location has both coordinates: event.Location has no "missing" value for them, so this can't
+// be left to the service. Those problems are reported before the service's own checks run.
+func (r venueRequest) toInput() (event.VenueInput, []event.FieldError) {
+	in := event.VenueInput{
+		Name:        r.Name,
+		Description: r.Description,
+		Address: event.Address{
+			Line1:       r.Address.Line1,
+			Line2:       r.Address.Line2,
+			City:        r.Address.City,
+			Region:      r.Address.Region,
+			PostalCode:  r.Address.PostalCode,
+			CountryCode: r.Address.CountryCode,
+		},
+		TimeZone: r.TimeZone,
+		Capacity: r.Capacity,
+	}
+	var problems []event.FieldError
+	if l := r.Location; l != nil {
+		if l.Latitude == nil {
+			problems = append(problems, event.FieldError{Field: "location.latitude", Message: "is required"})
+		}
+		if l.Longitude == nil {
+			problems = append(problems, event.FieldError{Field: "location.longitude", Message: "is required"})
+		}
+		if l.Latitude != nil && l.Longitude != nil {
+			in.Location = &event.Location{Latitude: *l.Latitude, Longitude: *l.Longitude}
+		}
+	}
+	return in, problems
 }
 
 // venueResponse is the JSON form of a venue. It is separate from event.Venue so the API's
@@ -60,7 +138,7 @@ type venueResponse struct {
 	ID          uuid.UUID         `json:"id"` // written as text, e.g. "0b6e...", by UUID's MarshalText
 	Name        string            `json:"name"`
 	Description *string           `json:"description"`
-	Address     addressResponse   `json:"address"`
+	Address     addressJSON       `json:"address"`
 	Location    *locationResponse `json:"location"`
 	TimeZone    string            `json:"time_zone"`
 	Capacity    *int              `json:"capacity"`
@@ -68,7 +146,8 @@ type venueResponse struct {
 	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
-type addressResponse struct {
+// addressJSON is the JSON form of an address, the same in requests and responses.
+type addressJSON struct {
 	Line1       string  `json:"line1"`
 	Line2       *string `json:"line2"`
 	City        string  `json:"city"`
@@ -87,7 +166,7 @@ func toVenueResponse(v event.Venue) venueResponse {
 		ID:          v.ID,
 		Name:        v.Name,
 		Description: v.Description,
-		Address: addressResponse{
+		Address: addressJSON{
 			Line1:       v.Address.Line1,
 			Line2:       v.Address.Line2,
 			City:        v.Address.City,

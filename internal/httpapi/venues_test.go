@@ -233,3 +233,207 @@ func TestGetVenue_NotFoundIsNotLoggedAsAnError(t *testing.T) {
 		t.Errorf("a 404 was logged as a failure:\n%s", logs.String())
 	}
 }
+
+// post sends a POST request with this body and Content-Type to handler, in memory.
+func post(t *testing.T, handler http.Handler, path, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+const venuesPath = "/api/v1/admin/venues"
+
+// validVenueJSON is a request body that passes every rule.
+const validVenueJSON = `{
+	"name": "Volkswagen Arena",
+	"address": {"line1": "Huzur Mah. Azerbaycan Cad. 1", "city": "Istanbul", "country_code": "TR"},
+	"time_zone": "Europe/Istanbul"
+}`
+
+func TestCreateVenue_Returns201WithTheVenueAndItsLocation(t *testing.T) {
+	router, _, _ := newVenueRouter(t)
+
+	rec := post(t, router, venuesPath, "application/json; charset=utf-8", `{
+		"name": "  Volkswagen Arena ",
+		"description": "",
+		"address": {
+			"line1": "Huzur Mah. Azerbaycan Cad. 1",
+			"line2": "Gate B",
+			"city": "Istanbul",
+			"region": null,
+			"postal_code": "34396",
+			"country_code": "TR"
+		},
+		"location": {"latitude": 41.108934, "longitude": 29.010547},
+		"time_zone": "Europe/Istanbul",
+		"capacity": 5000
+	}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want %d; body %s", rec.Code, http.StatusCreated, rec.Body)
+	}
+	// The id and timestamps come from Postgres, so they are read from the body first.
+	var created struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	// The body is the venue as stored: the name trimmed, the blank description stored as null.
+	checkJSON(t, rec.Body.String(), fmt.Sprintf(`{
+		"id": %q,
+		"name": "Volkswagen Arena",
+		"description": null,
+		"address": {
+			"line1": "Huzur Mah. Azerbaycan Cad. 1",
+			"line2": "Gate B",
+			"city": "Istanbul",
+			"region": null,
+			"postal_code": "34396",
+			"country_code": "TR"
+		},
+		"location": {"latitude": 41.108934, "longitude": 29.010547},
+		"time_zone": "Europe/Istanbul",
+		"capacity": 5000,
+		"created_at": %q,
+		"updated_at": %q
+	}`, created.ID, created.CreatedAt, created.UpdatedAt))
+	if _, err := uuid.Parse(created.ID); err != nil {
+		t.Errorf("id %q is not a UUID", created.ID)
+	}
+
+	// The Location header points at the new venue, and reading it gives the same body.
+	location := rec.Header().Get("Location")
+	if want := venuesPath + "/" + created.ID; location != want {
+		t.Fatalf("Location: got %q, want %q", location, want)
+	}
+	got := get(t, router, location)
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET %s: status %d", location, got.Code)
+	}
+	checkJSON(t, got.Body.String(), rec.Body.String())
+}
+
+func TestCreateVenue_InvalidFieldsAre400WithEveryProblem(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+
+	rec := post(t, router, venuesPath, "application/json", `{
+		"name": " ",
+		"address": {"line1": "Huzur Mah. 1", "city": "Istanbul", "country_code": "tr"},
+		"time_zone": "Mars/Olympus_Mons",
+		"capacity": 0
+	}`)
+
+	checkProblem(t, rec, http.StatusBadRequest, `{
+		"type": "about:blank",
+		"title": "Bad Request",
+		"status": 400,
+		"detail": "the request has invalid fields; see errors",
+		"instance": "/api/v1/admin/venues",
+		"errors": [
+			{"field": "name", "message": "is required"},
+			{"field": "address.country_code", "message": "must be an ISO 3166-1 alpha-2 country code: two capital letters, e.g. TR"},
+			{"field": "time_zone", "message": "must be an IANA time zone name, e.g. Europe/Istanbul"},
+			{"field": "capacity", "message": "must be between 1 and 2147483647"}
+		]
+	}`)
+	var count int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM venues").Scan(&count); err != nil {
+		t.Fatalf("count venues: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("venues stored: got %d, want 0", count)
+	}
+}
+
+func TestCreateVenue_LocationNeedsBothCoordinates(t *testing.T) {
+	router, _, _ := newVenueRouter(t)
+
+	rec := post(t, router, venuesPath, "application/json", `{
+		"name": "Volkswagen Arena",
+		"address": {"line1": "Huzur Mah. 1", "city": "Istanbul", "country_code": "TR"},
+		"location": {"latitude": 41.1},
+		"time_zone": "Europe/Istanbul"
+	}`)
+
+	checkProblem(t, rec, http.StatusBadRequest, `{
+		"type": "about:blank",
+		"title": "Bad Request",
+		"status": 400,
+		"detail": "the request has invalid fields; see errors",
+		"instance": "/api/v1/admin/venues",
+		"errors": [{"field": "location.longitude", "message": "is required"}]
+	}`)
+}
+
+func TestCreateVenue_UnusableBodies(t *testing.T) {
+	router, _, _ := newVenueRouter(t)
+	const mustBeJSON = `the request body must be JSON, sent with "Content-Type: application/json"`
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		status      int
+		detail      string
+	}{
+		{"no Content-Type", "", validVenueJSON, http.StatusUnsupportedMediaType, mustBeJSON},
+		{"form instead of JSON", "application/x-www-form-urlencoded", "name=Arena", http.StatusUnsupportedMediaType, mustBeJSON},
+		{"empty body", "application/json", "", http.StatusBadRequest, "the request body is empty"},
+		{"cut off", "application/json", `{"name": "Arena"`, http.StatusBadRequest,
+			"the request body is not valid JSON: it ends too early"},
+		{"not JSON", "application/json", `{name: "Arena"}`, http.StatusBadRequest,
+			"the request body is not valid JSON: invalid character 'n' looking for beginning of object key string (at byte 2)"},
+		{"array instead of object", "application/json", `[]`, http.StatusBadRequest, "the request body must be a JSON object"},
+		{"number as string", "application/json", `{"capacity": "5000"}`, http.StatusBadRequest, "capacity must be a whole number"},
+		{"fraction for a whole number", "application/json", `{"capacity": 50.5}`, http.StatusBadRequest, "capacity must be a whole number"},
+		{"wrong type in a nested field", "application/json", `{"address": {"city": 7}}`, http.StatusBadRequest,
+			"address.city must be a string"},
+		{"unknown field", "application/json", `{"capcity": 5000}`, http.StatusBadRequest, `unknown field "capcity"`},
+		{"two objects", "application/json", validVenueJSON + `{}`, http.StatusBadRequest,
+			"the request body must contain one JSON object and nothing after it"},
+		{"too large", "application/json", `{"name": "` + strings.Repeat("a", maxRequestBodyBytes) + `"}`,
+			http.StatusRequestEntityTooLarge, "the request body must be at most 65536 bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := post(t, router, venuesPath, tt.contentType, tt.body)
+
+			want, err := json.Marshal(problem{
+				Type:     "about:blank",
+				Title:    http.StatusText(tt.status),
+				Status:   tt.status,
+				Detail:   tt.detail,
+				Instance: venuesPath,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			checkProblem(t, rec, tt.status, string(want))
+		})
+	}
+}
+
+func TestCreateVenue_DatabaseFailureIs500WithoutDetails(t *testing.T) {
+	router, pool, logs := newVenueRouter(t)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+
+	rec := post(t, router, venuesPath, "application/json", validVenueJSON)
+
+	checkProblem(t, rec, http.StatusInternalServerError, `{
+		"type": "about:blank",
+		"title": "Internal Server Error",
+		"status": 500,
+		"instance": "/api/v1/admin/venues"
+	}`)
+	if !strings.Contains(logs.String(), "create venue") {
+		t.Errorf("the log doesn't contain the service's error:\n%s", logs.String())
+	}
+}

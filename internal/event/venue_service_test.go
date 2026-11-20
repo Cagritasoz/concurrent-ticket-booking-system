@@ -136,3 +136,95 @@ func TestVenueServiceGet_DatabaseFailureIsNotNotFound(t *testing.T) {
 		t.Errorf("got %v, want a database error that is not ErrVenueNotFound", err)
 	}
 }
+
+func TestVenueServiceCreate_StoresTheCleanedInput(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	in := event.VenueInput{
+		Name:        " Volkswagen Arena ",
+		Description: new(""), // blank optional text is stored as NULL
+		Address: event.Address{
+			Line1:       "Huzur Mah. Azerbaycan Cad. 1",
+			City:        "Istanbul",
+			PostalCode:  new("34396"),
+			CountryCode: "TR",
+		},
+		Location: &event.Location{Latitude: 41.108934, Longitude: 29.010547},
+		TimeZone: "Europe/Istanbul",
+		Capacity: new(5000),
+	}
+
+	created, err := service.Create(t.Context(), in)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	want := event.Venue{
+		ID:   created.ID,
+		Name: "Volkswagen Arena",
+		Address: event.Address{
+			Line1:       "Huzur Mah. Azerbaycan Cad. 1",
+			City:        "Istanbul",
+			PostalCode:  new("34396"),
+			CountryCode: "TR",
+		},
+		Location:  &event.Location{Latitude: 41.108934, Longitude: 29.010547},
+		TimeZone:  "Europe/Istanbul",
+		Capacity:  new(5000),
+		CreatedAt: created.CreatedAt,
+		UpdatedAt: created.CreatedAt, // a new venue has never been updated
+	}
+	if !reflect.DeepEqual(created, want) {
+		t.Errorf("Create returned\n %+v\nwant\n %+v", created, want)
+	}
+	if created.ID == uuid.Nil() || created.CreatedAt.IsZero() {
+		t.Errorf("id %v, created_at %v: want both filled in by Postgres", created.ID, created.CreatedAt)
+	}
+
+	// Read back separately: what Create returned is what was stored.
+	got, err := service.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("Get returned\n %+v\nCreate returned\n %+v", got, created)
+	}
+}
+
+func TestVenueServiceCreate_InvalidInputIsAValidationErrorAndStoresNothing(t *testing.T) {
+	pool := newPool(t)
+	service := event.NewVenueService(pool)
+
+	_, err := service.Create(t.Context(), event.VenueInput{Name: "Arena"}) // no address, no time zone
+
+	var invalid *event.ValidationError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("got %v, want a *event.ValidationError", err)
+	}
+	if len(invalid.Fields) != 4 { // address.line1, address.city, address.country_code, time_zone
+		t.Errorf("got %d problems, want 4: %v", len(invalid.Fields), invalid.Fields)
+	}
+	var count int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM venues").Scan(&count); err != nil {
+		t.Fatalf("count venues: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("venues stored: got %d, want 0", count)
+	}
+}
+
+func TestVenueServiceCreate_DatabaseFailureIsNotAValidationError(t *testing.T) {
+	pool := newPool(t)
+	service := event.NewVenueService(pool)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+
+	_, err := service.Create(t.Context(), event.VenueInput{
+		Name:     "Arena",
+		Address:  event.Address{Line1: "Huzur Mah. 1", City: "Istanbul", CountryCode: "TR"},
+		TimeZone: "Europe/Istanbul",
+	})
+
+	var invalid *event.ValidationError
+	if err == nil || errors.As(err, &invalid) {
+		t.Errorf("got %v, want a database error that is not a *event.ValidationError", err)
+	}
+}

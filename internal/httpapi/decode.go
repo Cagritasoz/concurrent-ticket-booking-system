@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -18,9 +20,18 @@ import (
 // (and hold in memory) a body of any size.
 const maxRequestBodyBytes = 64 << 10
 
+// The media types request bodies are accepted in.
+const (
+	jsonContentType = "application/json"
+	// mergePatchContentType is JSON Merge Patch (RFC 7396), the standard format for "change only
+	// the fields I send". It is plain JSON; the media type only says how it is applied.
+	mergePatchContentType = "application/merge-patch+json"
+)
+
 // decodeJSON reads the request body as one JSON object into dst, strictly:
 //
-//   - the Content-Type must be application/json (else 415 Unsupported Media Type);
+//   - the Content-Type must be one of mediaTypes, e.g. application/json (else 415 Unsupported
+//     Media Type);
 //   - the body may be at most maxRequestBodyBytes long (else 413 Content Too Large);
 //   - unknown fields are rejected, so a typo like "capcity" isn't silently ignored;
 //   - nothing may follow the object.
@@ -30,25 +41,55 @@ const maxRequestBodyBytes = 64 << 10
 // false, and the handler just returns:
 //
 //	var req venueRequest
-//	if !decodeJSON(c, &req) {
+//	if !decodeJSON(c, &req, jsonContentType) {
 //		return
 //	}
 //
 // Gin has c.ShouldBindJSON for this, which Spring's @RequestBody resembles more, but it accepts
 // unknown fields unless a global setting changes that, and its validation rules are struct tags
 // in the HTTP layer. Ours live in the service (event.VenueInput.clean).
-func decodeJSON(c *gin.Context, dst any) bool {
+//
+// decodeJSON is readBody followed by decodeStrict; a handler that decodes the same body twice
+// (PATCH) calls the two itself.
+func decodeJSON(c *gin.Context, dst any, mediaTypes ...string) bool {
+	body, ok := readBody(c, mediaTypes...)
+	if !ok {
+		return false
+	}
+	return decodeStrict(c, body, dst)
+}
+
+// readBody checks that the Content-Type is one of mediaTypes (else 415) and reads the body, at
+// most maxRequestBodyBytes (else 413). If it can't, it writes the problem response and returns
+// false.
+func readBody(c *gin.Context, mediaTypes ...string) ([]byte, bool) {
 	// ParseMediaType splits "application/json; charset=utf-8" into the type and its parameters.
 	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeProblem(c, http.StatusUnsupportedMediaType, `the request body must be JSON, sent with "Content-Type: application/json"`)
-		return false
+	if err != nil || !slices.Contains(mediaTypes, mediaType) {
+		allowed := make([]string, len(mediaTypes))
+		for i, t := range mediaTypes {
+			allowed[i] = `"Content-Type: ` + t + `"`
+		}
+		writeProblem(c, http.StatusUnsupportedMediaType,
+			"the request body must be JSON, sent with "+strings.Join(allowed, " or "))
+		return nil, false
 	}
 
 	// MaxBytesReader returns an error once more than the limit is read, and tells the server to
 	// close the connection afterwards instead of reading the rest.
-	body := http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
-	decoder := json.NewDecoder(body)
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes))
+	if err != nil {
+		status, detail := describeDecodeError(err) // 413 for a body over the limit
+		writeProblem(c, status, detail)
+		return nil, false
+	}
+	return body, true
+}
+
+// decodeStrict decodes body into dst as one JSON object with no unknown fields and nothing after
+// it. If it can't, it writes a 400 problem response and returns false.
+func decodeStrict(c *gin.Context, body []byte, dst any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(dst); err != nil {

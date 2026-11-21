@@ -24,13 +24,22 @@ type venueHandler struct {
 	logger  *slog.Logger
 }
 
-// get handles GET /api/v1/admin/venues/:id.
-func (h venueHandler) get(c *gin.Context) {
-	// c.Param reads the :id part of the path, like @PathVariable. An id that isn't a UUID can't
-	// name a venue, so it is "not found" (404) too, not "bad request".
+// venueID reads the :id part of the path, like @PathVariable. An id that isn't a UUID can't name
+// a venue, so it is "not found" (404) too, not "bad request"; venueID then writes that response
+// and returns false.
+func venueID(c *gin.Context) (uuid.UUID, bool) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		writeProblem(c, http.StatusNotFound, event.ErrVenueNotFound.Error())
+		return uuid.UUID{}, false
+	}
+	return id, true
+}
+
+// get handles GET /api/v1/admin/venues/:id.
+func (h venueHandler) get(c *gin.Context) {
+	id, ok := venueID(c)
+	if !ok {
 		return
 	}
 
@@ -48,7 +57,7 @@ func (h venueHandler) get(c *gin.Context) {
 // URL in the Location header, like Spring's ResponseEntity.created(uri).body(venue).
 func (h venueHandler) create(c *gin.Context) {
 	var req venueRequest
-	if !decodeJSON(c, &req) {
+	if !decodeJSON(c, &req, jsonContentType) {
 		return // decodeJSON has written the problem response
 	}
 	in, problems := req.toInput()
@@ -106,6 +115,61 @@ func (h venueHandler) list(c *gin.Context) {
 	c.JSON(http.StatusOK, toVenueListResponse(page))
 }
 
+// update handles PATCH /api/v1/admin/venues/:id: it changes only the fields in the body (JSON
+// Merge Patch, see venuePatch) and answers 200 with the venue as stored.
+func (h venueHandler) update(c *gin.Context) {
+	id, ok := venueID(c)
+	if !ok {
+		return
+	}
+	// Merge Patch is the standard media type; plain JSON is accepted too, since the body is the
+	// same and many clients send application/json by default.
+	body, ok := readBody(c, mergePatchContentType, jsonContentType)
+	if !ok {
+		return
+	}
+	// First check the body against the create body's shape, for the same strict checks and
+	// error messages; then decode it into venuePatch, which records which fields were sent.
+	if !decodeStrict(c, body, &venueRequest{}) {
+		return
+	}
+	var patch venuePatch
+	if err := json.Unmarshal(body, &patch); err != nil {
+		// Can't happen for a body that passed the check above, so it would be our bug (500).
+		h.writeError(c, fmt.Errorf("decode venue patch: %w", err))
+		return
+	}
+
+	// The patch is applied inside the service's transaction, to the venue's current values: a
+	// function literal (a closure, like a Java lambda) that captures patch.
+	venue, err := h.service.Update(c.Request.Context(), id, func(in *event.VenueInput) error {
+		if problems := patch.apply(in); len(problems) > 0 {
+			return &event.ValidationError{Fields: problems}
+		}
+		return nil
+	})
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, toVenueResponse(venue))
+}
+
+// delete handles DELETE /api/v1/admin/venues/:id and answers 204 No Content: success, and no
+// body. Deleting the same venue again is a 404.
+func (h venueHandler) delete(c *gin.Context) {
+	id, ok := venueID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.Delete(c.Request.Context(), id); err != nil {
+		h.writeError(c, err)
+		return
+	}
+	// Status only sets the code; Gin sends it when the handler returns, with nothing written.
+	c.Status(http.StatusNoContent)
+}
+
 // writeError turns an error from the service into a response, like an @ExceptionHandler in a
 // @ControllerAdvice. Errors the module defines get their status; anything else is a 500 whose
 // cause is logged but never sent, since it may show internals (SQL, hosts).
@@ -124,7 +188,7 @@ func (h venueHandler) writeError(c *gin.Context, err error) {
 
 // venueRequest is the JSON body of POST /venues. A missing field decodes as its zero value: ""
 // for a required text (which the service reports as "is required") and nil for an optional one.
-// null does the same.
+// null does the same. PATCH /venues/{id} checks its body against it too (see update).
 type venueRequest struct {
 	Name        string           `json:"name"`
 	Description *string          `json:"description"`

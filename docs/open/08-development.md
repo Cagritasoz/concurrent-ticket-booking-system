@@ -166,6 +166,10 @@ curl -i -X POST http://localhost:8080/api/v1/admin/venues \
 curl -i http://localhost:8080/api/v1/admin/venues/{id}
 curl -i "http://localhost:8080/api/v1/admin/venues?limit=2"
 curl -i "http://localhost:8080/api/v1/admin/venues?limit=2&cursor={next_cursor of the previous page}"
+curl -i -X PATCH http://localhost:8080/api/v1/admin/venues/{id} \
+  -H "Content-Type: application/merge-patch+json" \
+  -d '{"address":{"city":"Ankara"},"capacity":6000}'
+curl -i -X DELETE http://localhost:8080/api/v1/admin/venues/{id}
 ```
 
 On Windows PowerShell, `curl` is an alias of `Invoke-WebRequest`; use `curl.exe` for the real one.

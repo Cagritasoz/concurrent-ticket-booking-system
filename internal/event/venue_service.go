@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/event/eventdb"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres"
 )
 
 // VenueService holds the rules for venues, like a Spring @Service: handlers call it, and it
@@ -19,14 +20,14 @@ import (
 // There is no repository layer in between: eventdb.Queries already is one, generated from SQL.
 // The service is safe for concurrent use; one instance serves every request.
 type VenueService struct {
-	queries *eventdb.Queries
-	// The pool itself joins here when a method needs a transaction (postgres.WithTx).
+	pool    *pgxpool.Pool    // for transactions (postgres.WithTx)
+	queries *eventdb.Queries // for single queries, each in its own transaction
 }
 
 // NewVenueService creates the service on a connection pool. cmd/ticketing calls it once at
 // startup and hands the service to whoever needs it (constructor injection, wired by hand).
 func NewVenueService(pool *pgxpool.Pool) *VenueService {
-	return &VenueService{queries: eventdb.New(pool)}
+	return &VenueService{pool: pool, queries: eventdb.New(pool)}
 }
 
 // Get returns the venue with this id, or ErrVenueNotFound. Any other error means the database
@@ -126,6 +127,67 @@ func (s *VenueService) List(ctx context.Context, after *VenueCursor, limit int) 
 	return page, nil
 }
 
+// Update changes the venue with this id and returns it as stored, or ErrVenueNotFound. In one
+// transaction it reads and locks the venue, calls change with the venue's current values, checks
+// the changed values with the same rules as Create, and stores them. If change returns an error,
+// or the changed values break a rule (a *ValidationError), nothing is stored and that error is
+// returned.
+//
+// change gets the current values because a partial update needs them: "set the city to Ankara"
+// keeps every other field as it is. It runs while the row is locked, so it should only edit in
+// and not do slow work such as I/O.
+//
+// The lock (SELECT ... FOR UPDATE) is what makes two updates at the same time safe. Without it,
+// both could read the same values, and the second write would undo the first one's change (a
+// "lost update"). With it, the second waits until the first commits and then reads its result.
+// In Spring this is an @Transactional method with a PESSIMISTIC_WRITE lock.
+func (s *VenueService) Update(ctx context.Context, id uuid.UUID, change func(in *VenueInput) error) (Venue, error) {
+	var updated Venue
+	err := postgres.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		q := s.queries.WithTx(tx) // the same queries, run in this transaction
+
+		row, err := q.GetVenueForUpdate(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrVenueNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock venue %s: %w", id, err)
+		}
+
+		in := toVenue(row).input()
+		if err := change(&in); err != nil {
+			return err
+		}
+		in, err = in.clean()
+		if err != nil {
+			return err
+		}
+
+		row, err = q.UpdateVenue(ctx, toUpdateParams(id, in))
+		if err != nil {
+			return fmt.Errorf("update venue %s: %w", id, err) // like Create: a failing CHECK is our bug
+		}
+		updated = toVenue(row)
+		return nil
+	})
+	if err != nil {
+		return Venue{}, err // WithTx passes fn's error on unchanged, so errors.Is and errors.As work
+	}
+	return updated, nil
+}
+
+// Delete removes the venue with this id, or returns ErrVenueNotFound if there is none.
+func (s *VenueService) Delete(ctx context.Context, id uuid.UUID) error {
+	deleted, err := s.queries.DeleteVenue(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete venue %s: %w", id, err)
+	}
+	if deleted == 0 {
+		return ErrVenueNotFound
+	}
+	return nil
+}
+
 // toCreateParams is toVenue in reverse: the input as the generated query's parameters.
 func toCreateParams(in VenueInput) eventdb.CreateVenueParams {
 	p := eventdb.CreateVenueParams{
@@ -147,4 +209,25 @@ func toCreateParams(in VenueInput) eventdb.CreateVenueParams {
 		p.Capacity = new(int32(*in.Capacity)) // clean checked that it fits in an int32
 	}
 	return p
+}
+
+// toUpdateParams is toCreateParams plus the id of the venue to update. The columns are the same,
+// so it reuses toCreateParams and the conversions stay in one place.
+func toUpdateParams(id uuid.UUID, in VenueInput) eventdb.UpdateVenueParams {
+	p := toCreateParams(in)
+	return eventdb.UpdateVenueParams{
+		ID:           id,
+		Name:         p.Name,
+		Description:  p.Description,
+		AddressLine1: p.AddressLine1,
+		AddressLine2: p.AddressLine2,
+		City:         p.City,
+		Region:       p.Region,
+		PostalCode:   p.PostalCode,
+		CountryCode:  p.CountryCode,
+		Latitude:     p.Latitude,
+		Longitude:    p.Longitude,
+		Timezone:     p.Timezone,
+		Capacity:     p.Capacity,
+	}
 }

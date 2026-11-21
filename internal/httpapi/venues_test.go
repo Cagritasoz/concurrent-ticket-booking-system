@@ -240,7 +240,13 @@ func TestGetVenue_NotFoundIsNotLoggedAsAnError(t *testing.T) {
 // post sends a POST request with this body and Content-Type to handler, in memory.
 func post(t *testing.T, handler http.Handler, path, contentType, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	return send(t, handler, http.MethodPost, path, contentType, body)
+}
+
+// send sends a request with this method, body and Content-Type (none if "") to handler, in memory.
+func send(t *testing.T, handler http.Handler, method, path, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -600,5 +606,290 @@ func TestListVenues_DatabaseFailureIs500WithoutDetails(t *testing.T) {
 	}`)
 	if !strings.Contains(logs.String(), "list venues") {
 		t.Errorf("the log doesn't contain the service's error:\n%s", logs.String())
+	}
+}
+
+// fullVenueParams returns the parameters of a venue with every field set.
+func fullVenueParams() eventdb.CreateVenueParams {
+	return eventdb.CreateVenueParams{
+		Name:         "Volkswagen Arena",
+		Description:  new("Box office opens two hours before each event."),
+		AddressLine1: "Huzur Mah. Azerbaycan Cad. 1",
+		AddressLine2: new("Gate B"),
+		City:         "Istanbul",
+		Region:       new("Sariyer"),
+		PostalCode:   new("34396"),
+		CountryCode:  "TR",
+		Latitude:     new(41.108934),
+		Longitude:    new(29.010547),
+		Timezone:     "Europe/Istanbul",
+		Capacity:     new(int32(5000)),
+	}
+}
+
+// patch sends a PATCH request with this body as JSON Merge Patch.
+func patch(t *testing.T, handler http.Handler, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return send(t, handler, http.MethodPatch, path, mergePatchContentType, body)
+}
+
+func TestPatchVenue_ChangesOnlyTheSentFields(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	stored := insertVenue(t, pool, fullVenueParams())
+	path := venuesPath + "/" + stored.ID.String()
+
+	// Objects are merged: only the city and the region of the address change, only the
+	// latitude of the location. Fields left out keep their values; null clears one.
+	rec := patch(t, router, path, `{
+		"name": "Volkswagen Arena Istanbul",
+		"description": null,
+		"address": {"city": "Ankara", "region": null},
+		"location": {"latitude": 39.92}
+	}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var body struct {
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	checkJSON(t, rec.Body.String(), fmt.Sprintf(`{
+		"id": %q,
+		"name": "Volkswagen Arena Istanbul",
+		"description": null,
+		"address": {
+			"line1": "Huzur Mah. Azerbaycan Cad. 1",
+			"line2": "Gate B",
+			"city": "Ankara",
+			"region": null,
+			"postal_code": "34396",
+			"country_code": "TR"
+		},
+		"location": {"latitude": 39.92, "longitude": 29.010547},
+		"time_zone": "Europe/Istanbul",
+		"capacity": 5000,
+		"created_at": %q,
+		"updated_at": %q
+	}`, stored.ID, timeJSON(stored.CreatedAt), timeJSON(body.UpdatedAt)))
+	if !body.UpdatedAt.After(stored.UpdatedAt) {
+		t.Errorf("updated_at %v is not after %v", body.UpdatedAt, stored.UpdatedAt)
+	}
+
+	// The response is what was stored.
+	got := get(t, router, path)
+	checkJSON(t, got.Body.String(), rec.Body.String())
+}
+
+func TestPatchVenue_AcceptsMergePatchAndPlainJSON(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+
+	for _, contentType := range []string{mergePatchContentType, "application/json; charset=utf-8"} {
+		rec := send(t, router, http.MethodPatch, path, contentType, `{"capacity": 6000}`)
+		if rec.Code != http.StatusOK {
+			t.Errorf("Content-Type %s: status %d, want 200; body %s", contentType, rec.Code, rec.Body)
+		}
+	}
+
+	rec := send(t, router, http.MethodPatch, path, "text/plain", `{"capacity": 6000}`)
+	checkProblem(t, rec, http.StatusUnsupportedMediaType, `{
+		"type": "about:blank",
+		"title": "Unsupported Media Type",
+		"status": 415,
+		"detail": "the request body must be JSON, sent with \"Content-Type: application/merge-patch+json\" or \"Content-Type: application/json\"",
+		"instance": "`+path+`"
+	}`)
+}
+
+func TestPatchVenue_InvalidResultIs400AndStoresNothing(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+	before := get(t, router, path).Body.String()
+
+	// The patched venue is checked with the same rules as a new one: required fields set to
+	// null are missing, and the address set to null leaves all its required fields empty.
+	rec := patch(t, router, path, `{
+		"name": null,
+		"address": null,
+		"time_zone": "Mars/Olympus_Mons",
+		"capacity": 0
+	}`)
+
+	checkProblem(t, rec, http.StatusBadRequest, `{
+		"type": "about:blank",
+		"title": "Bad Request",
+		"status": 400,
+		"detail": "the request has invalid fields; see errors",
+		"instance": "`+path+`",
+		"errors": [
+			{"field": "name", "message": "is required"},
+			{"field": "address.line1", "message": "is required"},
+			{"field": "address.city", "message": "is required"},
+			{"field": "address.country_code", "message": "must be an ISO 3166-1 alpha-2 country code: two capital letters, e.g. TR"},
+			{"field": "time_zone", "message": "must be an IANA time zone name, e.g. Europe/Istanbul"},
+			{"field": "capacity", "message": "must be between 1 and 2147483647"}
+		]
+	}`)
+	checkJSON(t, get(t, router, path).Body.String(), before) // unchanged, updated_at included
+}
+
+func TestPatchVenue_LocationEndsWithBothCoordinatesOrNeither(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	withLocation := fullVenueParams()
+	withoutLocation := fullVenueParams()
+	withoutLocation.Latitude, withoutLocation.Longitude = nil, nil
+
+	tests := []struct {
+		name     string
+		stored   eventdb.CreateVenueParams
+		patch    string
+		location string // the location afterwards, for a 200
+		missing  string // the field reported as missing, for a 400
+	}{
+		{"set both", withoutLocation, `{"location": {"latitude": 1.5, "longitude": 2.5}}`,
+			`{"latitude": 1.5, "longitude": 2.5}`, ""},
+		{"change one, keep the other", withLocation, `{"location": {"longitude": 30}}`,
+			`{"latitude": 41.108934, "longitude": 30}`, ""},
+		{"clear it", withLocation, `{"location": null}`, `null`, ""},
+		{"clear both coordinates", withLocation, `{"location": {"latitude": null, "longitude": null}}`, `null`, ""},
+		{"set only one", withoutLocation, `{"location": {"latitude": 1.5}}`, "", "location.longitude"},
+		{"clear only one", withLocation, `{"location": {"latitude": null}}`, "", "location.latitude"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := venuesPath + "/" + insertVenue(t, pool, tt.stored).ID.String()
+
+			rec := patch(t, router, path, tt.patch)
+
+			if tt.missing != "" {
+				checkProblem(t, rec, http.StatusBadRequest, `{
+					"type": "about:blank",
+					"title": "Bad Request",
+					"status": 400,
+					"detail": "the request has invalid fields; see errors",
+					"instance": "`+path+`",
+					"errors": [{"field": "`+tt.missing+`", "message": "is required"}]
+				}`)
+				return
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body %s", rec.Code, rec.Body)
+			}
+			var body struct {
+				Location json.RawMessage `json:"location"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			checkJSON(t, string(body.Location), tt.location)
+		})
+	}
+}
+
+func TestPatchVenue_UnusableBodies(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+
+	tests := []struct {
+		name   string
+		body   string
+		detail string
+	}{
+		{"empty body", "", "the request body is empty"},
+		{"array instead of object", `[]`, "the request body must be a JSON object"},
+		{"unknown field", `{"capcity": 6000}`, `unknown field "capcity"`},
+		{"unknown field in a nested object", `{"address": {"cty": "Ankara"}}`, `unknown field "cty"`},
+		{"number as string", `{"capacity": "6000"}`, "capacity must be a whole number"},
+		{"wrong type in a nested field", `{"address": {"city": 7}}`, "address.city must be a string"},
+		{"number instead of an object", `{"location": 5}`, "location must be an object"},
+		{"string for a coordinate", `{"location": {"latitude": "north"}}`, "location.latitude must be a number"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := patch(t, router, path, tt.body)
+
+			want, err := json.Marshal(problem{
+				Type:     "about:blank",
+				Title:    "Bad Request",
+				Status:   http.StatusBadRequest,
+				Detail:   tt.detail,
+				Instance: path,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			checkProblem(t, rec, http.StatusBadRequest, string(want))
+		})
+	}
+}
+
+func TestPatchAndDeleteVenue_UnknownOrMalformedIDIs404(t *testing.T) {
+	router, _, _ := newVenueRouter(t)
+
+	for name, id := range map[string]string{
+		"no venue has this id": uuid.New().String(),
+		"not a UUID":           "not-a-uuid",
+	} {
+		for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+			t.Run(method+" "+name, func(t *testing.T) {
+				path := venuesPath + "/" + id
+
+				rec := send(t, router, method, path, mergePatchContentType, `{"capacity": 6000}`)
+
+				checkProblem(t, rec, http.StatusNotFound, `{
+					"type": "about:blank",
+					"title": "Not Found",
+					"status": 404,
+					"detail": "venue not found",
+					"instance": "`+path+`"
+				}`)
+			})
+		}
+	}
+}
+
+func TestDeleteVenue_Returns204AndTheVenueIsGone(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+
+	rec := send(t, router, http.MethodDelete, path, "", "")
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want %d; body %s", rec.Code, http.StatusNoContent, rec.Body)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body: got %q, want none", rec.Body)
+	}
+	if got := get(t, router, path); got.Code != http.StatusNotFound {
+		t.Errorf("GET after DELETE: status %d, want 404", got.Code)
+	}
+	if again := send(t, router, http.MethodDelete, path, "", ""); again.Code != http.StatusNotFound {
+		t.Errorf("second DELETE: status %d, want 404", again.Code)
+	}
+}
+
+func TestPatchAndDeleteVenue_DatabaseFailureIs500WithoutDetails(t *testing.T) {
+	router, pool, logs := newVenueRouter(t)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+	path := venuesPath + "/" + uuid.New().String()
+
+	for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+		rec := send(t, router, method, path, mergePatchContentType, `{"capacity": 6000}`)
+
+		checkProblem(t, rec, http.StatusInternalServerError, `{
+			"type": "about:blank",
+			"title": "Internal Server Error",
+			"status": 500,
+			"instance": "`+path+`"
+		}`)
+	}
+	// PATCH fails when it starts its transaction, DELETE in its query.
+	for _, cause := range []string{"begin transaction", "delete venue"} {
+		if !strings.Contains(logs.String(), cause) {
+			t.Errorf("the log doesn't contain %q:\n%s", cause, logs.String())
+		}
 	}
 }

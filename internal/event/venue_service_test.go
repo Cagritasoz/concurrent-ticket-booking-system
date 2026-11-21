@@ -370,7 +370,231 @@ func TestVenueServiceList_DatabaseFailureIsNotAValidationError(t *testing.T) {
 func names(venues []event.Venue) string {
 	var b strings.Builder
 	for _, v := range venues {
-		_,_ = fmt.Fprintf(&b, "  %s %s\n", v.Name, v.ID)
+		_, _ = fmt.Fprintf(&b, "  %s %s\n", v.Name, v.ID)
 	}
 	return b.String()
+}
+
+// fullInput returns a valid input with every field set.
+func fullInput() event.VenueInput {
+	return event.VenueInput{
+		Name:        "Volkswagen Arena",
+		Description: new("Box office opens two hours before each event."),
+		Address: event.Address{
+			Line1:       "Huzur Mah. Azerbaycan Cad. 1",
+			Line2:       new("Gate B"),
+			City:        "Istanbul",
+			Region:      new("Sariyer"),
+			PostalCode:  new("34396"),
+			CountryCode: "TR",
+		},
+		Location: &event.Location{Latitude: 41.108934, Longitude: 29.010547},
+		TimeZone: "Europe/Istanbul",
+		Capacity: new(5000),
+	}
+}
+
+func TestVenueServiceUpdate_StoresTheChangedAndCleanedValues(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	created, err := service.Create(t.Context(), fullInput())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	updated, err := service.Update(t.Context(), created.ID, func(in *event.VenueInput) error {
+		// change sees the current values...
+		if in.Name != "Volkswagen Arena" || *in.Capacity != 5000 {
+			t.Errorf("change got %+v, want the stored venue's values", *in)
+		}
+		// ...and edits some of them. The rest stay as they are.
+		in.Name = "  Volkswagen Arena Istanbul "
+		in.Description = nil
+		in.Address.City = "Ankara"
+		in.Capacity = new(6000)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	want := created
+	want.Name = "Volkswagen Arena Istanbul" // cleaned: trimmed
+	want.Description = nil
+	want.Address.City = "Ankara"
+	want.Capacity = new(6000)
+	want.UpdatedAt = updated.UpdatedAt
+	if !reflect.DeepEqual(updated, want) {
+		t.Errorf("Update returned\n %+v\nwant\n %+v", updated, want)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Errorf("updated_at %v is not after %v", updated.UpdatedAt, created.UpdatedAt)
+	}
+	got, err := service.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(got, updated) {
+		t.Errorf("Get returned\n %+v\nUpdate returned\n %+v", got, updated)
+	}
+}
+
+func TestVenueServiceUpdate_InvalidResultIsAValidationErrorAndStoresNothing(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	created, err := service.Create(t.Context(), fullInput())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = service.Update(t.Context(), created.ID, func(in *event.VenueInput) error {
+		in.Name = "Arena Istanbul" // valid, but must not be stored either
+		in.TimeZone = "Mars/Olympus_Mons"
+		in.Capacity = new(0)
+		return nil
+	})
+
+	var invalid *event.ValidationError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("got %v, want a *event.ValidationError", err)
+	}
+	want := []event.FieldError{
+		{Field: "time_zone", Message: "must be an IANA time zone name, e.g. Europe/Istanbul"},
+		{Field: "capacity", Message: "must be between 1 and 2147483647"},
+	}
+	if !reflect.DeepEqual(invalid.Fields, want) {
+		t.Errorf("problems: got %v, want %v", invalid.Fields, want)
+	}
+	assertUnchanged(t, service, created)
+}
+
+func TestVenueServiceUpdate_ErrorFromChangeIsReturnedAndStoresNothing(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	created, err := service.Create(t.Context(), fullInput())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	errStop := errors.New("stop")
+
+	_, err = service.Update(t.Context(), created.ID, func(in *event.VenueInput) error {
+		in.Name = "Arena Istanbul"
+		return errStop
+	})
+
+	if !errors.Is(err, errStop) {
+		t.Errorf("got %v, want the error change returned", err)
+	}
+	assertUnchanged(t, service, created)
+}
+
+func TestVenueServiceUpdate_UnknownIDIsErrVenueNotFound(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+
+	_, err := service.Update(t.Context(), uuid.New(), func(*event.VenueInput) error {
+		t.Error("change was called for a venue that doesn't exist")
+		return nil
+	})
+
+	if !errors.Is(err, event.ErrVenueNotFound) {
+		t.Errorf("got %v, want ErrVenueNotFound", err)
+	}
+}
+
+// Many updates at the same time, each adding 1 to the capacity it reads. Every one must see the
+// result of the one before, which is what the row lock in Update guarantees. Without it, two
+// updates could read the same capacity, and one increment would be lost.
+func TestVenueServiceUpdate_ConcurrentUpdatesLoseNothing(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	in := fullInput()
+	in.Capacity = new(1000)
+	created, err := service.Create(t.Context(), in)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const updates = 20
+	errs := make(chan error, updates) // buffered, so no goroutine blocks on sending
+	for range updates {
+		go func() {
+			_, err := service.Update(t.Context(), created.ID, func(in *event.VenueInput) error {
+				in.Capacity = new(*in.Capacity + 1)
+				return nil
+			})
+			errs <- err
+		}()
+	}
+	for range updates {
+		if err := <-errs; err != nil {
+			t.Errorf("Update: %v", err)
+		}
+	}
+
+	got, err := service.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if *got.Capacity != 1000+updates {
+		t.Errorf("capacity: got %d, want %d (%d updates lost)", *got.Capacity, 1000+updates, 1000+updates-*got.Capacity)
+	}
+}
+
+func TestVenueServiceUpdate_DatabaseFailureIsNeitherNotFoundNorInvalid(t *testing.T) {
+	pool := newPool(t)
+	service := event.NewVenueService(pool)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+
+	_, err := service.Update(t.Context(), uuid.New(), func(*event.VenueInput) error { return nil })
+
+	var invalid *event.ValidationError
+	if err == nil || errors.Is(err, event.ErrVenueNotFound) || errors.As(err, &invalid) {
+		t.Errorf("got %v, want a database error", err)
+	}
+}
+
+func TestVenueServiceDelete_RemovesTheVenue(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	created, err := service.Create(t.Context(), fullInput())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := service.Delete(t.Context(), created.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := service.Get(t.Context(), created.ID); !errors.Is(err, event.ErrVenueNotFound) {
+		t.Errorf("Get after Delete: got %v, want ErrVenueNotFound", err)
+	}
+	if err := service.Delete(t.Context(), created.ID); !errors.Is(err, event.ErrVenueNotFound) {
+		t.Errorf("second Delete: got %v, want ErrVenueNotFound", err)
+	}
+}
+
+func TestVenueServiceDelete_UnknownIDIsErrVenueNotFound(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+
+	if err := service.Delete(t.Context(), uuid.New()); !errors.Is(err, event.ErrVenueNotFound) {
+		t.Errorf("got %v, want ErrVenueNotFound", err)
+	}
+}
+
+func TestVenueServiceDelete_DatabaseFailureIsNotNotFound(t *testing.T) {
+	pool := newPool(t)
+	service := event.NewVenueService(pool)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+
+	err := service.Delete(t.Context(), uuid.New())
+	if err == nil || errors.Is(err, event.ErrVenueNotFound) {
+		t.Errorf("got %v, want a database error that is not ErrVenueNotFound", err)
+	}
+}
+
+// assertUnchanged fails the test unless the stored venue is still want.
+func assertUnchanged(t *testing.T, service *event.VenueService, want event.Venue) {
+	t.Helper()
+	got, err := service.Get(t.Context(), want.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the venue changed:\n got  %+v\n want %+v", got, want)
+	}
 }

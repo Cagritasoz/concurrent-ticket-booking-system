@@ -117,6 +117,8 @@ Unknown routes get Gin's default `404 page not found`.
 | POST | `/api/v1/admin/venues` | `201` with the venue and a `Location` header, or `400` / `413` / `415` | **Create a venue.** Admin API, no authentication until M2. |
 | GET | `/api/v1/admin/venues?limit=20&cursor=...` | `200` with one page of venues, or `400` (bad `limit` or `cursor`) | **List venues** sorted by name, page by page. Admin API, no authentication until M2. |
 | GET | `/api/v1/admin/venues/{id}` | `200` with the venue, or `404` (no venue has this id, or the id isn't a UUID) | **Read a venue.** Admin API, no authentication until M2. |
+| PATCH | `/api/v1/admin/venues/{id}` | `200` with the changed venue, or `400` / `404` / `413` / `415` | **Change some of a venue's fields** (JSON Merge Patch). Admin API, no authentication until M2. |
+| DELETE | `/api/v1/admin/venues/{id}` | `204` with no body, or `404` | **Delete a venue.** Admin API, no authentication until M2. |
 
 ### Admin API
 
@@ -187,6 +189,32 @@ that venue (keyset pagination). Venues added or deleted meanwhile don't shift th
 cursor still works after its venue was renamed or deleted. There is no total count. Unknown query
 parameters are ignored.
 
+**Changing a venue:** `PATCH /api/v1/admin/venues/{id}` with a JSON Merge Patch (RFC 7396), sent
+as `Content-Type: application/merge-patch+json` or `application/json`. The body has the create
+body's fields, any subset of them:
+
+| In the body | Effect |
+|---|---|
+| a field left out | kept as it is |
+| `"field": null` | cleared; for a required field (`name`, `address.line1`, ...) that is reported as "is required" |
+| `"field": value` | set |
+| `"address": {...}`, `"location": {...}` | merged: only the fields inside are changed, e.g. `{"address": {"city": "Ankara"}}` keeps the rest of the address |
+| `"address": null` | clears the whole address, so its required fields are reported |
+
+```json
+{"name": "Volkswagen Arena Istanbul", "description": null, "address": {"city": "Ankara"}}
+```
+
+The body is read as strictly as a create body (unknown fields, wrong types), and the changed venue
+must pass every create rule; otherwise nothing is stored. A location must end up with both
+coordinates or neither, so `{"location": {"latitude": 41.1}}` on a venue without a location is a
+400. The change runs in one transaction with the venue's row locked, so two admins changing the
+same venue at once can't overwrite each other's change; the second waits for the first. The
+answer is `200` with the venue as stored. Every successful PATCH sets `updated_at`, even `{}`.
+
+**Deleting a venue:** `DELETE /api/v1/admin/venues/{id}` answers `204 No Content`; a venue that
+doesn't exist (also one just deleted) is a `404`.
+
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
 
@@ -201,7 +229,7 @@ application/problem+json`:
 | `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "capcity"` or `capacity must be a whole number` |
 | `404` | no venue has the id, or the id isn't a UUID | "venue not found" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
-| `415` | `Content-Type` isn't `application/json` | what to send instead |
+| `415` | `Content-Type` isn't `application/json` (for PATCH also `application/merge-patch+json`) | what to send instead |
 | `500` | anything unexpected, e.g. the database fails | none; the cause is logged as `request failed` at ERROR, with the request ID |
 
 A missing `location.latitude` or `location.longitude` is checked in the handler, before the

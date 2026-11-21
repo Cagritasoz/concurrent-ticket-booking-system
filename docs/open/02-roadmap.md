@@ -8,12 +8,11 @@
   Makefile, lint config and CI workflow).
 - **Done in M1:** step 1 (Postgres in Docker Compose, connection pool, `/readyz` checks Postgres),
   step 2 (golang-migrate, `cmd/migrate`, the `venues` table), step 3 (tests start their own
-  Postgres with Testcontainers), step 4 (sqlc venue queries, `WithTx`, constraint error checks).
-- **In progress:** M1 steps 5a and 5b, built one operation at a time through every layer.
-  Reading, creating and listing venues work end to end (`GET /api/v1/admin/venues/{id}`,
-  `POST /api/v1/admin/venues`, `GET /api/v1/admin/venues` in keyset pages), with validation in
-  the service and Problem Details errors.
-- **Next:** update and delete venues.
+  Postgres with Testcontainers), step 4 (sqlc venue queries, `WithTx`, constraint error checks),
+  steps 5a and 5b (the venue service and the first REST endpoints: create, read, list in keyset
+  pages, update with JSON Merge Patch in a locked transaction, and delete, under
+  `/api/v1/admin/venues`, with validation in the service and Problem Details errors).
+- **Next:** M1 step 6, layouts and sections.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -101,8 +100,8 @@ standing section. Every ticket has a place: a seat, or a standing section.
 | 2 | golang-migrate: a `migrations/` folder, `make migrate-up` and `make migrate-down`, the first table (`venues`: name, description, address, optional coordinates, time zone, optional capacity) | Flyway | Done |
 | 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Done |
 | 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; broken constraints recognised by name, for modules to map to their own errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Done |
-| 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | In progress (get, create, list done) |
-| 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | In progress (get, create, list done) |
+| 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | Done |
+| 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | Done |
 | 6 | Layouts and sections: a venue's layouts; each layout's sections, either seated or standing with a capacity | Child entities + nested endpoints | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
 | 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of its venue | Another `@RestController` + service | Not started |
@@ -144,7 +143,7 @@ standing section. Every ticket has a place: a seat, or a standing section.
   through equal names, each WithTx outcome (a failing commit included) and each error check; 20
   concurrent read-change-write transactions lose no update with `FOR UPDATE` (without it, 15 of 20
   were lost). CI checks the generated code with `sqlc diff`.
-- **Step 5a (in progress):** `event.VenueService` with `Get`, built on the generated queries
+- **Step 5a:** `event.VenueService` with `Get`, built on the generated queries
   (no repository layer of its own). It returns the module's own `event.Venue` (address grouped,
   coordinates as one optional `Location`, capacity as `*int`), converted from the row in one
   place, so `httpapi` will never import `eventdb`. An unknown id is `event.ErrVenueNotFound`; any
@@ -157,8 +156,12 @@ standing section. Every ticket has a place: a seat, or a standing section.
   one keyset page (`event.VenuePage`: the venues and an `event.VenueCursor` for the next page,
   nil on the last), 1 to 100 venues, fetching one row more than asked to know whether another
   page follows. Tests walk every page, including equal names across a page boundary, a full last
-  page without a next cursor, and a cursor whose venue was deleted meanwhile.
-- **Step 5b (in progress):** `GET /api/v1/admin/venues/{id}` in an `/api/v1/admin` route group,
+  page without a next cursor, and a cursor whose venue was deleted meanwhile. `Update` locks the
+  venue (`GetVenueForUpdate` in `postgres.WithTx`), hands its current values to the caller's
+  change function, checks the result with Create's rules and writes it back; an error or a broken
+  rule stores nothing. 20 concurrent updates that each add 1 to the capacity lose none. `Delete`
+  turns "0 rows deleted" into `event.ErrVenueNotFound`.
+- **Step 5b:** `GET /api/v1/admin/venues/{id}` in an `/api/v1/admin` route group,
   wired in `cmd/ticketing` (`event.NewVenueService(pool)` → `httpapi.NewRouter`). The JSON form
   of a venue lives in `httpapi` (snake_case, optional values `null`, times in UTC). Errors are RFC
   9457 Problem Details (`application/problem+json`): an unknown or malformed id is 404, any other
@@ -170,6 +173,11 @@ standing section. Every ticket has a place: a seat, or a standing section.
   embeds the time zone database (`time/tzdata`). `GET /api/v1/admin/venues?limit=&cursor=`
   returns `{"venues": [...], "next_cursor": ...}`; the cursor is opaque to clients (base64url
   JSON), and a bad `limit` or `cursor` is a 400 with an `errors` list.
+  `PATCH /api/v1/admin/venues/{id}` takes a JSON Merge Patch (RFC 7396; `application/json` is
+  accepted too): fields left out are kept, `null` clears a field, nested objects are merged. The
+  body is checked against the create body's shape first, for the same error messages, then
+  applied in the service's transaction; 200 with the venue as stored. `DELETE` answers 204, or 404
+  for an unknown id (also when deleting twice).
 
 ### Planned M1 endpoints
 

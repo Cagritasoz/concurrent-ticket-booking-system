@@ -8,8 +8,9 @@ import (
 	"unicode/utf8"
 )
 
-// VenueInput is what an admin provides to create a venue: every field of Venue except the ones
-// Postgres fills in (ID, CreatedAt, UpdatedAt).
+// VenueInput is every field of Venue an admin can set, so all but the ones Postgres fills in (ID,
+// CreatedAt, UpdatedAt). Create takes one; Update hands the venue's current values to its caller
+// as one to change. Both check it with clean.
 type VenueInput struct {
 	Name        string
 	Description *string
@@ -17,6 +18,20 @@ type VenueInput struct {
 	Location    *Location
 	TimeZone    string
 	Capacity    *int
+}
+
+// input returns the venue's changeable values, the starting point of an update. The pointers are
+// shared with v; that is safe because clean and the update's changes replace pointers instead of
+// writing through them.
+func (v Venue) input() VenueInput {
+	return VenueInput{
+		Name:        v.Name,
+		Description: v.Description,
+		Address:     v.Address,
+		Location:    v.Location,
+		TimeZone:    v.TimeZone,
+		Capacity:    v.Capacity,
+	}
 }
 
 // FieldError is one problem with one input field. Field is the field's path in the API's JSON

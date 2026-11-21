@@ -64,6 +64,68 @@ func (s *VenueService) Create(ctx context.Context, in VenueInput) (Venue, error)
 	return toVenue(row), nil
 }
 
+// The page sizes of List. The maximum keeps one request from reading the whole table.
+const (
+	DefaultVenuePageSize = 20
+	MaxVenuePageSize     = 100
+)
+
+// VenueCursor is a position in the venue list, which is sorted by name and then id: a page
+// starts right after it. It holds the values of the last venue of the previous page, not its
+// row number, so venues added or removed meanwhile don't shift the pages, and the cursor still
+// works if that venue itself is renamed or deleted.
+type VenueCursor struct {
+	Name string
+	ID   uuid.UUID
+}
+
+// VenuePage is one page of venues. Next is where the next page starts, nil on the last page.
+type VenuePage struct {
+	Venues []Venue
+	Next   *VenueCursor
+}
+
+// List returns up to limit venues sorted by name (then id), starting after the cursor; a nil
+// cursor starts at the beginning. A limit outside 1..MaxVenuePageSize is a *ValidationError.
+//
+// This is keyset pagination ("seek method"). OFFSET would make Postgres read and throw away every
+// row before the page, so deep pages get slower, and a venue added meanwhile would shift every
+// later page by one (a venue shown twice or skipped). Here Postgres jumps to the cursor's
+// position in the (name, id) index and reads only the page.
+func (s *VenueService) List(ctx context.Context, after *VenueCursor, limit int) (VenuePage, error) {
+	if limit < 1 || limit > MaxVenuePageSize {
+		return VenuePage{}, &ValidationError{Fields: []FieldError{
+			{Field: "limit", Message: fmt.Sprintf("must be between 1 and %d", MaxVenuePageSize)},
+		}}
+	}
+
+	// One row more than asked for: if it comes back, another page follows. That avoids a
+	// separate count query, and the client is never sent a cursor that leads to an empty page.
+	params := eventdb.ListVenuesParams{PageSize: int32(limit + 1)} // at most 101, fits in an int32
+	// Without a cursor the zero values are used: ("", zero UUID) comes before every venue,
+	// because a venue's name can't be empty (CHECK in the migration), that is the first page.
+	if after != nil {
+		params.AfterName, params.AfterID = after.Name, after.ID
+	}
+	rows, err := s.queries.ListVenues(ctx, params)
+	if err != nil {
+		return VenuePage{}, fmt.Errorf("list venues: %w", err)
+	}
+
+	var page VenuePage
+	if len(rows) > limit {
+		rows = rows[:limit] // drop the extra row; it only told us there is more pages so we set the cursor.
+		last := rows[limit-1]
+		page.Next = &VenueCursor{Name: last.Name, ID: last.ID} // cursor not set if there is no next page.
+	}
+	// make with a length gives a non-nil slice even for no rows, so an empty page is [] in JSON.
+	page.Venues = make([]Venue, len(rows))
+	for i, row := range rows {
+		page.Venues[i] = toVenue(row)
+	}
+	return page, nil
+}
+
 // toCreateParams is toVenue in reverse: the input as the generated query's parameters.
 func toCreateParams(in VenueInput) eventdb.CreateVenueParams {
 	p := eventdb.CreateVenueParams{

@@ -1,9 +1,13 @@
 package httpapi
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 	"uuid"
 
@@ -31,7 +35,7 @@ func (h venueHandler) get(c *gin.Context) {
 	}
 
 	// The request's context goes to the service: it carries the request ID for logs, and it is
-	// cancelled if the client disconnects, which also cancels the database query.
+	// canceled if the client disconnects, which also cancels the database query.
 	venue, err := h.service.Get(c.Request.Context(), id)
 	if err != nil {
 		h.writeError(c, err)
@@ -61,6 +65,45 @@ func (h venueHandler) create(c *gin.Context) {
 	// c.FullPath() is the route's path pattern, here "/api/v1/admin/venues".
 	c.Header("Location", c.FullPath()+"/"+venue.ID.String())
 	c.JSON(http.StatusCreated, toVenueResponse(venue))
+}
+
+// list handles GET /api/v1/admin/venues?limit=20&cursor=..., one page of venues sorted by name.
+// Both query parameters are optional (like @RequestParam(required = false)): limit defaults to
+// event.DefaultVenuePageSize, and without a cursor the first page is returned. To get the next
+// page, the client sends the next_cursor of the previous response as cursor.
+func (h venueHandler) list(c *gin.Context) {
+	limit := event.DefaultVenuePageSize // 20 is the default
+	var after *event.VenueCursor
+	// Problems with the text of the parameters are found here; the limit's range is the
+	// service's rule. c.Query returns "" for a parameter that is missing or empty.
+	var problems []event.FieldError
+	if s := c.Query("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err != nil { // convert string to int via Atoi.
+			problems = append(problems, event.FieldError{Field: "limit",
+				Message: fmt.Sprintf("must be a whole number between 1 and %d", event.MaxVenuePageSize)})
+		} else {
+			limit = n
+		}
+	}
+	if s := c.Query("cursor"); s != "" {
+		if cursor, err := decodeVenueCursor(s); err != nil {
+			problems = append(problems, event.FieldError{Field: "cursor",
+				Message: "must be the next_cursor of a previous page"})
+		} else {
+			after = &cursor
+		}
+	}
+	if len(problems) > 0 {
+		writeValidationProblem(c, problems)
+		return
+	}
+
+	page, err := h.service.List(c.Request.Context(), after, limit)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, toVenueListResponse(page))
 }
 
 // writeError turns an error from the service into a response, like an @ExceptionHandler in a
@@ -185,4 +228,54 @@ func toVenueResponse(v event.Venue) venueResponse {
 		r.Location = &locationResponse{Latitude: v.Location.Latitude, Longitude: v.Location.Longitude}
 	}
 	return r
+}
+
+// venueListResponse is the JSON form of one page: {"venues": [...], "next_cursor": "..."}.
+// next_cursor is null on the last page, so a client pages until it gets null.
+type venueListResponse struct {
+	Venues     []venueResponse `json:"venues"`
+	NextCursor *string         `json:"next_cursor"`
+}
+
+func toVenueListResponse(page event.VenuePage) venueListResponse {
+	r := venueListResponse{Venues: make([]venueResponse, len(page.Venues))} // [] when empty, not null
+	for i, v := range page.Venues {
+		r.Venues[i] = toVenueResponse(v)
+	}
+	if page.Next != nil {
+		r.NextCursor = new(encodeVenueCursor(*page.Next))
+	}
+	return r
+}
+
+// venueCursorJSON is what a cursor holds: the name and id of the last venue of a page.
+type venueCursorJSON struct {
+	Name string    `json:"name"`
+	ID   uuid.UUID `json:"id"`
+}
+
+// encodeVenueCursor turns a cursor into the opaque text the client gets as next_cursor: JSON,
+// base64url-encoded so it can go into a URL without escaping. "Opaque" means clients only pass it
+// back and never build one, so its contents can change without breaking them. It is not secret
+// (anyone can decode base64) and doesn't need to be: it holds only a venue's name and id, which
+// the client was just sent anyway, and an edited cursor only starts the page somewhere else.
+func encodeVenueCursor(cursor event.VenueCursor) string {
+	// json.Marshal fails only for values JSON can't hold (channels, functions, NaN); a string and
+	// a UUID always encode, so the error is ignored.
+	b, _ := json.Marshal(venueCursorJSON{Name: cursor.Name, ID: cursor.ID})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// decodeVenueCursor is encodeVenueCursor in reverse. It fails for text that encodeVenueCursor
+// can't have produced.
+func decodeVenueCursor(s string) (event.VenueCursor, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return event.VenueCursor{}, err
+	}
+	var cursor venueCursorJSON
+	if err := json.Unmarshal(b, &cursor); err != nil { // an id that isn't a UUID fails here too
+		return event.VenueCursor{}, err
+	}
+	return event.VenueCursor{Name: cursor.Name, ID: cursor.ID}, nil
 }

@@ -115,6 +115,7 @@ Unknown routes get Gin's default `404 page not found`.
 | GET | `/healthz` | `200 {"status":"ok"}` | **Liveness:** the process is alive. Always 200; it never checks dependencies, because restarting the app doesn't fix a database outage. |
 | GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready as soon as shutdown starts, or while Postgres doesn't answer a ping within 2 seconds. The reason is logged as `readiness check failed`, never sent to the client. It recovers by itself when Postgres returns. |
 | POST | `/api/v1/admin/venues` | `201` with the venue and a `Location` header, or `400` / `413` / `415` | **Create a venue.** Admin API, no authentication until M2. |
+| GET | `/api/v1/admin/venues?limit=20&cursor=...` | `200` with one page of venues, or `400` (bad `limit` or `cursor`) | **List venues** sorted by name, page by page. Admin API, no authentication until M2. |
 | GET | `/api/v1/admin/venues/{id}` | `200` with the venue, or `404` (no venue has this id, or the id isn't a UUID) | **Read a venue.** Admin API, no authentication until M2. |
 
 ### Admin API
@@ -164,6 +165,28 @@ The body is read strictly: `Content-Type` must be `application/json`, the body a
 JSON object with no unknown fields (a typo like `capcity` is an error, not ignored) and nothing
 after it.
 
+**Listing venues:** `GET /api/v1/admin/venues` returns venues sorted by name (in the database's
+collation), venues with the same name by id. The answer is one page:
+
+```json
+{"venues": [{"id": "...", "name": "Arena", ...}, ...], "next_cursor": "eyJuYW1lIjoiQ2x1YiIsImlkIjoi..."}
+```
+
+| Query parameter | Meaning |
+|---|---|
+| `limit` | venues per page, 1 to 100; default 20 |
+| `cursor` | where the page starts: the `next_cursor` of the previous page; without it, the first page |
+
+To read every venue, request pages until `next_cursor` is `null`. It is `null` on the last page,
+also when that page is exactly full, so a client never gets an empty page at the end. An empty
+list is `{"venues": [], "next_cursor": null}`.
+
+The cursor is opaque: clients pass it back unchanged and never build one. Inside it are the name
+and id of the previous page's last venue (base64url JSON), so the next page starts right after
+that venue (keyset pagination). Venues added or deleted meanwhile don't shift the pages, and a
+cursor still works after its venue was renamed or deleted. There is no total count. Unknown query
+parameters are ignored.
+
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
 
@@ -174,6 +197,7 @@ application/problem+json`:
 | Status | When | `detail` |
 |---|---|---|
 | `400` | invalid fields | "the request has invalid fields; see errors", plus an `errors` list with every problem at once: `[{"field":"address.city","message":"is required"}, ...]`. `field` is the path in the JSON. |
+| `400` | a list query with a `limit` that isn't a whole number from 1 to 100, or a `cursor` that isn't a `next_cursor` | "the request has invalid fields; see errors", with `field` `limit` or `cursor` |
 | `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "capcity"` or `capacity must be a whole number` |
 | `404` | no venue has the id, or the id isn't a UUID | "venue not found" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |

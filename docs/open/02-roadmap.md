@@ -10,9 +10,10 @@
   step 2 (golang-migrate, `cmd/migrate`, the `venues` table), step 3 (tests start their own
   Postgres with Testcontainers), step 4 (sqlc venue queries, `WithTx`, constraint error checks).
 - **In progress:** M1 steps 5a and 5b, built one operation at a time through every layer.
-  Reading and creating a venue work end to end (`GET /api/v1/admin/venues/{id}`,
-  `POST /api/v1/admin/venues`), with validation in the service and Problem Details errors.
-- **Next:** list, update and delete venues.
+  Reading, creating and listing venues work end to end (`GET /api/v1/admin/venues/{id}`,
+  `POST /api/v1/admin/venues`, `GET /api/v1/admin/venues` in keyset pages), with validation in
+  the service and Problem Details errors.
+- **Next:** update and delete venues.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -100,8 +101,8 @@ standing section. Every ticket has a place: a seat, or a standing section.
 | 2 | golang-migrate: a `migrations/` folder, `make migrate-up` and `make migrate-down`, the first table (`venues`: name, description, address, optional coordinates, time zone, optional capacity) | Flyway | Done |
 | 3 | `internal/platform/postgres/pgtest`: starts a real Postgres with Testcontainers and applies the migrations; `go test -short` skips these tests; CI runs them | `@Testcontainers` + `@DataJpaTest` | Done |
 | 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; broken constraints recognised by name, for modules to map to their own errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Done |
-| 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | In progress (get, create done) |
-| 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | In progress (get, create done) |
+| 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | In progress (get, create, list done) |
+| 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | In progress (get, create, list done) |
 | 6 | Layouts and sections: a venue's layouts; each layout's sections, either seated or standing with a capacity | Child entities + nested endpoints | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
 | 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of its venue | Another `@RestController` + service | Not started |
@@ -152,7 +153,11 @@ standing section. Every ticket has a place: a seat, or a standing section.
   found". `Create` cleans and checks an `event.VenueInput` first (text trimmed, blank optional
   text as `nil`, the length rules of the table's `CHECK`s, country code shape, coordinate ranges,
   IANA time zone, capacity range) and returns every problem at once as a `*event.ValidationError`;
-  nothing is stored then. Validation has its own unit tests, without a database.
+  nothing is stored then. Validation has its own unit tests, without a database. `List` returns
+  one keyset page (`event.VenuePage`: the venues and an `event.VenueCursor` for the next page,
+  nil on the last), 1 to 100 venues, fetching one row more than asked to know whether another
+  page follows. Tests walk every page, including equal names across a page boundary, a full last
+  page without a next cursor, and a cursor whose venue was deleted meanwhile.
 - **Step 5b (in progress):** `GET /api/v1/admin/venues/{id}` in an `/api/v1/admin` route group,
   wired in `cmd/ticketing` (`event.NewVenueService(pool)` → `httpapi.NewRouter`). The JSON form
   of a venue lives in `httpapi` (snake_case, optional values `null`, times in UTC). Errors are RFC
@@ -162,7 +167,9 @@ standing section. Every ticket has a place: a seat, or a standing section.
   `POST /api/v1/admin/venues` reads the body strictly (`application/json` only, 64 KiB, no
   unknown fields, one object) and answers 201 with a `Location` header; invalid fields are a 400
   with an `errors` list, an unusable body a 400 / 413 / 415 with our own message. The binary
-  embeds the time zone database (`time/tzdata`).
+  embeds the time zone database (`time/tzdata`). `GET /api/v1/admin/venues?limit=&cursor=`
+  returns `{"venues": [...], "next_cursor": ...}`; the cursor is opaque to clients (base64url
+  JSON), and a bad `limit` or `cursor` is a 400 with an `errors` list.
 
 ### Planned M1 endpoints
 

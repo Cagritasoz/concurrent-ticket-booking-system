@@ -2,7 +2,10 @@ package event_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"uuid"
 
@@ -25,8 +28,8 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// insertVenue stores a venue directly with the generated query, because the service can't
-// create venues yet. It returns the stored row.
+// insertVenue stores a venue directly with the generated query, so the Get tests don't depend on
+// Create. It returns the stored row.
 func insertVenue(t *testing.T, pool *pgxpool.Pool, params eventdb.CreateVenueParams) eventdb.Venue {
 	t.Helper()
 	row, err := eventdb.New(pool).CreateVenue(t.Context(), params)
@@ -207,7 +210,7 @@ func TestVenueServiceCreate_InvalidInputIsAValidationErrorAndStoresNothing(t *te
 	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM venues").Scan(&count); err != nil {
 		t.Fatalf("count venues: %v", err)
 	}
-	if count != 0 {
+	if count != 0 { // invalid should not be inserted.
 		t.Errorf("venues stored: got %d, want 0", count)
 	}
 }
@@ -227,4 +230,147 @@ func TestVenueServiceCreate_DatabaseFailureIsNotAValidationError(t *testing.T) {
 	if err == nil || errors.As(err, &invalid) {
 		t.Errorf("got %v, want a database error that is not a *event.ValidationError", err)
 	}
+}
+
+// createVenues stores one venue per name through the service and returns them in the list's
+// order: by name, then by id, the way Postgres compares them.
+func createVenues(t *testing.T, service *event.VenueService, names ...string) []event.Venue {
+	t.Helper()
+	venues := make([]event.Venue, 0, len(names)) // 0 = length, len(names) = capacity.
+	for _, name := range names {
+		v, err := service.Create(t.Context(), event.VenueInput{
+			Name:     name,
+			Address:  event.Address{Line1: "Huzur Mah. 1", City: "Istanbul", CountryCode: "TR"},
+			TimeZone: "Europe/Istanbul",
+		})
+		if err != nil {
+			t.Fatalf("Create %q: %v", name, err)
+		}
+		venues = append(venues, v)
+	}
+	// Like a Comparator in Java: negative if a comes first. The names are plain ASCII words, so
+	// Go's byte order and the database's collation agree on them.
+	slices.SortFunc(venues, func(a, b event.Venue) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return a.ID.Compare(b.ID) // names are the same, compare ids
+	})
+	return venues
+}
+
+func TestVenueServiceList_PagesThroughEveryVenueInOrder(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	// Two venues share a name, so the id decides their order, even across a page boundary.
+	want := createVenues(t, service, "Hall", "Arena", "Club", "Arena", "Dome")
+
+	// Walk the pages like a client: each request starts at the previous page's Next.
+	var got []event.Venue
+	var sizes []int
+	var after *event.VenueCursor
+	for {
+		page, err := service.List(t.Context(), after, 2)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		got = append(got, page.Venues...)
+		sizes = append(sizes, len(page.Venues))
+		if page.Next == nil { // there is no next page
+			break
+		}
+		after = page.Next
+	}
+
+	if !slices.Equal(sizes, []int{2, 2, 1}) {
+		t.Errorf("page sizes: got %v, want [2 2 1]", sizes)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("venues in this order:\n%s\nwant:\n%s", names(got), names(want))
+	}
+}
+
+// A last page that is exactly full has no Next, so the client isn't sent to an empty page.
+func TestVenueServiceList_FullLastPageHasNoNext(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+	createVenues(t, service, "Arena", "Club")
+
+	page, err := service.List(t.Context(), nil, 2)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page.Venues) != 2 || page.Next != nil {
+		t.Errorf("got %d venues and Next %+v, want 2 venues and no Next", len(page.Venues), page.Next)
+	}
+}
+
+func TestVenueServiceList_NoVenuesIsAnEmptyPage(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+
+	page, err := service.List(t.Context(), nil, event.DefaultVenuePageSize)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if page.Venues == nil || len(page.Venues) != 0 || page.Next != nil {
+		t.Errorf("got %+v, want an empty, non-nil slice and no Next", page)
+	}
+}
+
+// The cursor holds values, not a row number or a reference to the row, so it keeps working when
+// the venue it was taken from is deleted.
+func TestVenueServiceList_CursorSurvivesDeletingItsVenue(t *testing.T) {
+	pool := newPool(t)
+	service := event.NewVenueService(pool)
+	venues := createVenues(t, service, "Arena", "Club", "Dome")
+
+	first, err := service.List(t.Context(), nil, 1)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "DELETE FROM venues WHERE id = $1", first.Venues[0].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	next, err := service.List(t.Context(), first.Next, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if !reflect.DeepEqual(next.Venues, venues[1:]) {
+		t.Errorf("got\n%s\nwant\n%s", names(next.Venues), names(venues[1:]))
+	}
+}
+
+func TestVenueServiceList_LimitOutOfRangeIsAValidationError(t *testing.T) {
+	service := event.NewVenueService(newPool(t))
+
+	for _, limit := range []int{0, -1, event.MaxVenuePageSize + 1} {
+		_, err := service.List(t.Context(), nil, limit)
+
+		var invalid *event.ValidationError
+		want := []event.FieldError{{Field: "limit", Message: "must be between 1 and 100"}}
+		if !errors.As(err, &invalid) || !reflect.DeepEqual(invalid.Fields, want) {
+			t.Errorf("limit %d: got %v, want a *event.ValidationError with %v", limit, err, want)
+		}
+	}
+}
+
+func TestVenueServiceList_DatabaseFailureIsNotAValidationError(t *testing.T) {
+	pool := newPool(t)
+	service := event.NewVenueService(pool)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+
+	_, err := service.List(t.Context(), nil, event.DefaultVenuePageSize)
+
+	var invalid *event.ValidationError
+	if err == nil || errors.As(err, &invalid) {
+		t.Errorf("got %v, want a database error that is not a *event.ValidationError", err)
+	}
+}
+
+// names lists venues as "name id" lines, for readable failure messages.
+func names(venues []event.Venue) string {
+	var b strings.Builder
+	for _, v := range venues {
+		_,_ = fmt.Fprintf(&b, "  %s %s\n", v.Name, v.ID)
+	}
+	return b.String()
 }

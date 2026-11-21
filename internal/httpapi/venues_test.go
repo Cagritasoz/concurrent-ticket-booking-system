@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +46,7 @@ func newVenueRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *bytes.Buffer) {
 	return NewRouter(logger, &Readiness{}, pool, event.NewVenueService(pool)), pool, &logs
 }
 
-// insertVenue stores a venue with the generated query, since there is no create endpoint yet.
+// insertVenue stores a venue with the generated query, so the read tests don't depend on POST.
 func insertVenue(t *testing.T, pool *pgxpool.Pool, params eventdb.CreateVenueParams) eventdb.Venue {
 	t.Helper()
 	row, err := eventdb.New(pool).CreateVenue(t.Context(), params)
@@ -434,6 +437,168 @@ func TestCreateVenue_DatabaseFailureIs500WithoutDetails(t *testing.T) {
 		"instance": "/api/v1/admin/venues"
 	}`)
 	if !strings.Contains(logs.String(), "create venue") {
+		t.Errorf("the log doesn't contain the service's error:\n%s", logs.String())
+	}
+}
+
+// listPage is the part of a list response these tests look at.
+type listPage struct {
+	Venues []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"venues"`
+	NextCursor *string `json:"next_cursor"`
+}
+
+// getPage sends GET /venues with this query and decodes the 200 response.
+func getPage(t *testing.T, router http.Handler, query url.Values) listPage {
+	t.Helper()
+	rec := get(t, router, venuesPath+"?"+query.Encode())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET ?%s: status %d, body %s", query.Encode(), rec.Code, rec.Body)
+	}
+	var page listPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	return page
+}
+
+// minimalVenue returns the parameters of a venue with only the required fields.
+func minimalVenue(name string) eventdb.CreateVenueParams {
+	return eventdb.CreateVenueParams{
+		Name: name, AddressLine1: "Huzur Mah. 1", City: "Istanbul", CountryCode: "TR", Timezone: "Europe/Istanbul",
+	}
+}
+
+func TestListVenues_FollowsNextCursorToTheLastPage(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	for _, name := range []string{"Club", "Arena", "Hall"} {
+		insertVenue(t, pool, minimalVenue(name))
+	}
+
+	first := getPage(t, router, url.Values{"limit": {"2"}})
+	if first.NextCursor == nil {
+		t.Fatalf("first page: next_cursor is null, want a cursor")
+	}
+	second := getPage(t, router, url.Values{"limit": {"2"}, "cursor": {*first.NextCursor}})
+
+	var got []string
+	for _, v := range append(first.Venues, second.Venues...) {
+		got = append(got, v.Name)
+	}
+	if want := []string{"Arena", "Club", "Hall"}; !slices.Equal(got, want) {
+		t.Errorf("names: got %v, want %v", got, want)
+	}
+	if second.NextCursor != nil {
+		t.Errorf("last page: next_cursor %q, want null", *second.NextCursor)
+	}
+}
+
+func TestListVenues_PageBody(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	stored := insertVenue(t, pool, minimalVenue("Club"))
+
+	rec := get(t, router, venuesPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	// Each venue has the same form as GET /venues/{id}; one page is the last, so next_cursor is null.
+	checkJSON(t, rec.Body.String(), fmt.Sprintf(`{
+		"venues": [{
+			"id": %q,
+			"name": "Club",
+			"description": null,
+			"address": {
+				"line1": "Huzur Mah. 1", "line2": null, "city": "Istanbul",
+				"region": null, "postal_code": null, "country_code": "TR"
+			},
+			"location": null,
+			"time_zone": "Europe/Istanbul",
+			"capacity": null,
+			"created_at": %q,
+			"updated_at": %q
+		}],
+		"next_cursor": null
+	}`, stored.ID, timeJSON(stored.CreatedAt), timeJSON(stored.UpdatedAt)))
+}
+
+func TestListVenues_NoVenuesIsAnEmptyList(t *testing.T) {
+	router, _, _ := newVenueRouter(t)
+
+	rec := get(t, router, venuesPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	checkJSON(t, rec.Body.String(), `{"venues": [], "next_cursor": null}`) // [] , not null
+}
+
+func TestListVenues_LimitDefaultsTo20(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	for i := range event.DefaultVenuePageSize + 1 {
+		insertVenue(t, pool, minimalVenue(fmt.Sprintf("Venue %02d", i)))
+	}
+
+	page := getPage(t, router, url.Values{})
+
+	if len(page.Venues) != event.DefaultVenuePageSize || page.NextCursor == nil {
+		t.Errorf("got %d venues, next_cursor %v; want %d and a cursor",
+			len(page.Venues), page.NextCursor, event.DefaultVenuePageSize)
+	}
+}
+
+func TestListVenues_InvalidQueryIs400(t *testing.T) {
+	router, _, _ := newVenueRouter(t)
+	const notANumber = `{"field": "limit", "message": "must be a whole number between 1 and 100"}`
+	const outOfRange = `{"field": "limit", "message": "must be between 1 and 100"}`
+	const badCursor = `{"field": "cursor", "message": "must be the next_cursor of a previous page"}`
+
+	tests := []struct {
+		name   string
+		query  string
+		errors string
+	}{
+		{"limit not a number", "limit=ten", notANumber},
+		{"limit a fraction", "limit=2.5", notANumber},
+		{"limit zero", "limit=0", outOfRange},
+		{"limit over the maximum", "limit=101", outOfRange},
+		{"cursor not base64", "cursor=%21%21", badCursor},
+		{"cursor base64 but not a cursor", "cursor=" + base64.RawURLEncoding.EncodeToString([]byte("hello")), badCursor},
+		{"cursor with an id that isn't a UUID", "cursor=" +
+			base64.RawURLEncoding.EncodeToString([]byte(`{"name":"Arena","id":"7"}`)), badCursor},
+		{"both wrong: every problem at once", "limit=ten&cursor=%21%21", notANumber + "," + badCursor},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := get(t, router, venuesPath+"?"+tt.query)
+
+			checkProblem(t, rec, http.StatusBadRequest, `{
+				"type": "about:blank",
+				"title": "Bad Request",
+				"status": 400,
+				"detail": "the request has invalid fields; see errors",
+				"instance": "/api/v1/admin/venues",
+				"errors": [`+tt.errors+`]
+			}`)
+		})
+	}
+}
+
+func TestListVenues_DatabaseFailureIs500WithoutDetails(t *testing.T) {
+	router, pool, logs := newVenueRouter(t)
+	pool.Close() // every query now fails; Close may be called again by the cleanup
+
+	rec := get(t, router, venuesPath)
+
+	checkProblem(t, rec, http.StatusInternalServerError, `{
+		"type": "about:blank",
+		"title": "Internal Server Error",
+		"status": 500,
+		"instance": "/api/v1/admin/venues"
+	}`)
+	if !strings.Contains(logs.String(), "list venues") {
 		t.Errorf("the log doesn't contain the service's error:\n%s", logs.String())
 	}
 }

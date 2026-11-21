@@ -164,6 +164,8 @@ curl -i -X POST http://localhost:8080/api/v1/admin/venues \
   -H "Content-Type: application/json" \
   -d '{"name":"Volkswagen Arena","address":{"line1":"Huzur Mah. Azerbaycan Cad. 1","city":"Istanbul","country_code":"TR"},"time_zone":"Europe/Istanbul"}'
 curl -i http://localhost:8080/api/v1/admin/venues/{id}
+curl -i "http://localhost:8080/api/v1/admin/venues?limit=2"
+curl -i "http://localhost:8080/api/v1/admin/venues?limit=2&cursor={next_cursor of the previous page}"
 ```
 
 On Windows PowerShell, `curl` is an alias of `Invoke-WebRequest`; use `curl.exe` for the real one.

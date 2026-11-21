@@ -14,7 +14,7 @@
 │   ├── event/                       # MODULE: venues so far (events, tiers, tickets later in M1)
 │   │   ├── venue.go                 # Venue (the module's own type), ErrVenueNotFound, row → Venue
 │   │   ├── venue_input.go           # VenueInput, its validation, ValidationError / FieldError
-│   │   ├── venue_service.go         # VenueService (Get, Create) on top of the generated queries
+│   │   ├── venue_service.go         # VenueService (Get, Create, List in keyset pages) on top of the generated queries
 │   │   ├── queries/venues.sql       # the SQL sqlc reads
 │   │   └── eventdb/                 # sqlc-generated (db.go, models.go, venues.sql.go) + hand-written tests
 │   ├── platform/

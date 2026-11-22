@@ -13,8 +13,9 @@
   pages, update with JSON Merge Patch in a locked transaction, and delete, under
   `/api/v1/admin/venues`, with validation in the service and Problem Details errors), step 5c
   (venues get a lifecycle, archive and restore, and optimistic locking with `ETag` and a required
-  `If-Match`; their capacity moved to halls).
-- **Next:** M1 step 6a, the `halls`, `layouts` and `sections` tables.
+  `If-Match`; their capacity moved to halls), step 6a (the `halls`, `layouts` and `sections`
+  tables, with their status and version columns).
+- **Next:** M1 step 6b, halls end to end, built like venues (archive, restore, `If-Match`).
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -108,7 +109,7 @@ standing section.
 | 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | Done |
 | 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | Done |
 | 5c | **Venue lifecycle and optimistic locking:** `status` (active / archived) with archive and restore as compare-and-set requests, the list filtered by status; `version` sent as the `ETag`, a required `If-Match` on every change (412 / 428); DELETE only with `If-Match`; the venue's capacity removed (halls have it) | `@Version` + `ETag` / `If-Match` + soft delete | Done |
-| 6a | **Schema:** the `halls` table (a venue's rooms), the `layouts` table (a hall's setups) and the `sections` table (each layout's sections, either seated or standing with a capacity), names unique per parent among what isn't archived, deleted with their parent; a status for halls and layouts, a version for all three | `@OneToMany(cascade = REMOVE)` child entities, written as a Flyway migration | Not started |
+| 6a | **Schema:** the `halls` table (a venue's rooms), the `layouts` table (a hall's setups) and the `sections` table (each layout's sections, either seated or standing with a capacity), names unique per parent among what isn't archived, deleted with their parent; a status for halls and layouts, a version for all three | `@OneToMany(cascade = REMOVE)` child entities, written as a Flyway migration | Done |
 | 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | Not started |
 | 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | Not started |
 | 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | Not started |
@@ -200,6 +201,19 @@ standing section.
   malformed, 409 for a change to an archived venue. Tests: 20 concurrent changes from the same
   version have exactly one winner; 20 clients that retry after a 412 lose no change; every
   refusal names its reason and changes nothing.
+- **Step 6a:** migration 2 creates `halls` (venue, name, optional description and capacity),
+  `layouts` (hall, name, optional description) and `sections` (layout, name, kind `seated` or
+  `standing`, a capacity only for standing sections). Halls have a `status` (`active` /
+  `archived`, default active), layouts one with a draft first (`draft` / `active` / `archived`,
+  default draft), sections none; all three have a `version` (default 1). Names are unique per
+  parent, ignoring case, through the unique indexes `halls_venue_id_name_key`,
+  `layouts_hall_id_name_key` (both partial, `WHERE status <> 'archived'`, so an archived hall or
+  layout frees its name) and `sections_layout_id_name_key`. A partial index can't find archived
+  rows, so `halls_venue_id_idx` and `layouts_hall_id_idx` serve the foreign keys and the lists;
+  the sections index serves both itself. Deleting a venue, hall or layout deletes everything
+  below it (`ON DELETE CASCADE`). sqlc now generates `eventdb.Hall`, `eventdb.Layout` and
+  `eventdb.Section`. Tests try each table rule, the defaults, the case-insensitive names by
+  index name at every level, names freed by archiving, and the cascade from each level.
 
 ### Planned M1 endpoints
 

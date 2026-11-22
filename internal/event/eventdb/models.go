@@ -10,6 +10,40 @@ import (
 	"uuid"
 )
 
+type Hall struct {
+	ID          uuid.UUID
+	VenueID     uuid.UUID
+	Name        string
+	Description *string
+	Capacity    *int32
+	Status      string
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type Layout struct {
+	ID          uuid.UUID
+	HallID      uuid.UUID
+	Name        string
+	Description *string
+	Status      string
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type Section struct {
+	ID        uuid.UUID
+	LayoutID  uuid.UUID
+	Name      string
+	Kind      string
+	Capacity  *int32
+	Version   int32
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Venue struct {
 	ID           uuid.UUID
 	Name         string

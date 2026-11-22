@@ -128,11 +128,12 @@ func TestMigrations_UpDownUp(t *testing.T) {
 	}
 }
 
-// venue holds the columns of one test insert. Start from validVenue and change what the case needs.
-type venue map[string]any
+// row holds the columns of one test insert. Start from validVenue (or validHall, validLayout,
+// validSection) and change what the case needs.
+type row map[string]any
 
-func validVenue() venue {
-	return venue{
+func validVenue() row {
+	return row{
 		"name":          "Zorlu PSM",
 		"address_line1": "Levazım, Koru Sokağı No:2",
 		"city":          "Istanbul",
@@ -141,18 +142,19 @@ func validVenue() venue {
 	}
 }
 
-func (v venue) with(column string, value any) venue {
-	out := venue{}
-	for k, val := range v {
+func (r row) with(column string, value any) row {
+	out := row{}
+	for k, val := range r {
 		out[k] = val
 	}
 	out[column] = value
 	return out
 }
 
-func insertVenue(ctx context.Context, conn *pgx.Conn, v venue) error {
-	columns := make([]string, 0, len(v))
-	for column := range v {
+// insert adds r to table and returns the new row's id.
+func insert(ctx context.Context, conn *pgx.Conn, table string, r row) (string, error) {
+	columns := make([]string, 0, len(r))
+	for column := range r {
 		columns = append(columns, column)
 	}
 	slices.Sort(columns) // map order is random; sorting keeps the SQL the same every run
@@ -161,28 +163,68 @@ func insertVenue(ctx context.Context, conn *pgx.Conn, v venue) error {
 	values := make([]any, len(columns))
 	for i, column := range columns {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		values[i] = v[column]
+		values[i] = r[column]
 	}
-	sql := fmt.Sprintf("INSERT INTO venues (%s) VALUES (%s)",
-		strings.Join(columns, ", "), strings.Join(placeholders, ", "))
-	_, err := conn.Exec(ctx, sql, values...)
-	return err
+	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) RETURNING id::text",
+		table, strings.Join(columns, ", "), strings.Join(placeholders, ", "))
+	var id string
+	err := conn.QueryRow(ctx, sql, values...).Scan(&id)
+	return id, err
 }
 
-// Postgres error codes (SQLSTATE) for the rules the venues table enforces.
+// mustInsert is insert for rows a test needs in order to start, such as a section's layout.
+func mustInsert(t *testing.T, conn *pgx.Conn, table string, r row) string {
+	t.Helper()
+	id, err := insert(t.Context(), conn, table, r)
+	if err != nil {
+		t.Fatalf("insert into %s: %v", table, err)
+	}
+	return id
+}
+
+// Postgres error codes (SQLSTATE) for the rules the tables enforce.
 const (
-	notNullViolation = "23502"
-	checkViolation   = "23514"
+	notNullViolation    = "23502"
+	foreignKeyViolation = "23503"
+	uniqueViolation     = "23505"
+	checkViolation      = "23514"
+	undefinedColumn     = "42703"
 )
+
+// ruleCase is one insert in a TestXxx_TableRules test.
+type ruleCase struct {
+	name     string
+	row      row
+	wantCode string // "" means the insert must succeed
+}
+
+// checkRule inserts tc.row into table and checks that Postgres accepts it, or refuses it with
+// tc.wantCode.
+func checkRule(t *testing.T, conn *pgx.Conn, table string, tc ruleCase) {
+	t.Helper()
+	_, err := insert(t.Context(), conn, table, tc.row)
+	wantError(t, err, tc.wantCode)
+}
+
+// wantError checks that err is nil when code is "", and otherwise a Postgres error with that code.
+func wantError(t *testing.T, err error, code string) {
+	t.Helper()
+	if code == "" {
+		if err != nil {
+			t.Fatalf("got %v, want no error", err)
+		}
+		return
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Fatalf("got %v, want Postgres error %s", err, code)
+	}
+}
 
 func TestVenues_TableRules(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 
-	tests := []struct {
-		name     string
-		venue    venue
-		wantCode string // "" means the insert must succeed
-	}{
+	tests := []ruleCase{
 		{"required columns only", validVenue(), ""},
 		{"every column", validVenue().
 			with("description", "Box office opens two hours before each show.").
@@ -212,26 +254,14 @@ func TestVenues_TableRules(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := insertVenue(t.Context(), conn, tc.venue)
-			if tc.wantCode == "" {
-				if err != nil {
-					t.Fatalf("insert: %v", err)
-				}
-				return
-			}
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != tc.wantCode {
-				t.Fatalf("insert: got %v, want Postgres error %s", err, tc.wantCode)
-			}
+			checkRule(t, conn, "venues", tc)
 		})
 	}
 }
 
 func TestVenues_DefaultsFillIDStatusVersionAndTimestamps(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
-	if err := insertVenue(t.Context(), conn, validVenue()); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	mustInsert(t, conn, "venues", validVenue())
 
 	var id, status string
 	var version int
@@ -250,5 +280,267 @@ func TestVenues_DefaultsFillIDStatusVersionAndTimestamps(t *testing.T) {
 	}
 	if !sameTimes {
 		t.Error("created_at and updated_at should be equal for a new row")
+	}
+}
+
+func validHall(venueID string) row {
+	return row{"venue_id": venueID, "name": "Turkcell Stage"}
+}
+
+func validLayout(hallID string) row {
+	return row{"hall_id": hallID, "name": "Concert – standing floor"}
+}
+
+func validSection(layoutID string) row {
+	return row{"layout_id": layoutID, "name": "Floor", "kind": "standing", "capacity": 3000}
+}
+
+// unknownID is a well-formed id that no row has.
+const unknownID = "5d8d4a43-0a8e-4f4c-9b59-0c6a1f3f8e21"
+
+func TestHalls_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	venueID := mustInsert(t, conn, "venues", validVenue())
+
+	tests := []ruleCase{
+		{"required columns only", validHall(venueID), ""},
+		{"every column", validHall(venueID).
+			with("name", "Studio").
+			with("description", "Second floor, entrance from the garden.").
+			with("capacity", 900).
+			with("status", "archived").
+			with("version", 3), ""},
+		{"missing venue", validHall(venueID).with("venue_id", nil), notNullViolation},
+		{"unknown venue", validHall(venueID).with("venue_id", unknownID), foreignKeyViolation},
+		{"blank name", validHall(venueID).with("name", " "), checkViolation},
+		{"name longer than 200", validHall(venueID).with("name", strings.Repeat("a", 201)), checkViolation},
+		{"empty description", validHall(venueID).with("description", ""), checkViolation},
+		{"zero capacity", validHall(venueID).with("capacity", 0), checkViolation},
+		{"draft status", validHall(venueID).with("status", "draft"), checkViolation},
+		{"missing status", validHall(venueID).with("status", nil), notNullViolation},
+		{"zero version", validHall(venueID).with("version", 0), checkViolation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "halls", tc)
+		})
+	}
+}
+
+func TestLayouts_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	hallID := mustInsert(t, conn, "halls", validHall(mustInsert(t, conn, "venues", validVenue())))
+
+	tests := []ruleCase{
+		{"required columns only", validLayout(hallID), ""},
+		{"every column", validLayout(hallID).
+			with("name", "Basketball").
+			with("description", "Floor seating removed, retractable stands out.").
+			with("status", "active").
+			with("version", 5), ""},
+		{"archived", validLayout(hallID).with("name", "Theatre setup").with("status", "archived"), ""},
+		{"missing hall", validLayout(hallID).with("hall_id", nil), notNullViolation},
+		{"unknown hall", validLayout(hallID).with("hall_id", unknownID), foreignKeyViolation},
+		{"blank name", validLayout(hallID).with("name", " "), checkViolation},
+		{"name longer than 200", validLayout(hallID).with("name", strings.Repeat("a", 201)), checkViolation},
+		{"empty description", validLayout(hallID).with("description", ""), checkViolation},
+		{"unknown status", validLayout(hallID).with("status", "published"), checkViolation},
+		{"missing status", validLayout(hallID).with("status", nil), notNullViolation},
+		{"zero version", validLayout(hallID).with("version", 0), checkViolation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "layouts", tc)
+		})
+	}
+}
+
+func TestSections_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	layoutID := newTree(t, conn).layout
+	seated := validSection(layoutID).with("name", "Block 101").with("kind", "seated").with("capacity", nil)
+
+	tests := []ruleCase{
+		{"standing with a capacity", validSection(layoutID).with("name", "Pit"), ""},
+		{"seated without a capacity", seated, ""},
+		{"seated with a capacity", seated.with("capacity", 500), checkViolation},
+		{"standing without a capacity", validSection(layoutID).with("capacity", nil), checkViolation},
+		{"zero capacity", validSection(layoutID).with("capacity", 0), checkViolation},
+		{"unknown kind", validSection(layoutID).with("kind", "vip"), checkViolation},
+		{"missing kind", validSection(layoutID).with("kind", nil), notNullViolation},
+		{"blank name", validSection(layoutID).with("name", ""), checkViolation},
+		{"name longer than 100", validSection(layoutID).with("name", strings.Repeat("a", 101)), checkViolation},
+		{"missing layout", validSection(layoutID).with("layout_id", nil), notNullViolation},
+		{"unknown layout", validSection(layoutID).with("layout_id", unknownID), foreignKeyViolation},
+		{"a later version", validSection(layoutID).with("name", "Standing left").with("version", 2), ""},
+		{"zero version", validSection(layoutID).with("version", 0), checkViolation},
+		{"a status", validSection(layoutID).with("status", "active"), undefinedColumn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "sections", tc)
+		})
+	}
+}
+
+// Each level's names are unique within its parent, ignoring case, and free to repeat under
+// another parent. The services will turn the violation into their own error by the index name,
+// so the test checks the name too.
+func TestNamesAreUniquePerParentIgnoringCase(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+
+	tests := []struct {
+		table  string
+		index  string
+		parent string // the parent's table
+		child  func(parentID string) row
+	}{
+		{"halls", "halls_venue_id_name_key", "venues", validHall},
+		{"layouts", "layouts_hall_id_name_key", "halls", validLayout},
+		{"sections", "sections_layout_id_name_key", "layouts", validSection},
+	}
+	for _, tc := range tests {
+		t.Run(tc.table, func(t *testing.T) {
+			parentA, parentB := newTree(t, conn).id(tc.parent), newTree(t, conn).id(tc.parent)
+			mustInsert(t, conn, tc.table, tc.child(parentA).with("name", "Main"))
+
+			_, err := insert(t.Context(), conn, tc.table, tc.child(parentA).with("name", "MAIN"))
+			if !postgres.IsUniqueViolation(err, tc.index) {
+				t.Errorf("same name, same parent: got %v, want a %s violation", err, tc.index)
+			}
+			if _, err := insert(t.Context(), conn, tc.table, tc.child(parentB).with("name", "Main")); err != nil {
+				t.Errorf("same name, another parent: %v", err)
+			}
+		})
+	}
+}
+
+// An archived hall or layout gives up its name: the unique indexes are partial (WHERE status <>
+// 'archived'), so a new one can take the name, and several archived ones can share it.
+func TestArchivedHallsAndLayoutsFreeTheirName(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+
+	tests := []struct {
+		table  string
+		index  string
+		parent string
+		child  func(parentID string) row
+	}{
+		{"halls", "halls_venue_id_name_key", "venues", validHall},
+		{"layouts", "layouts_hall_id_name_key", "halls", validLayout},
+	}
+	for _, tc := range tests {
+		t.Run(tc.table, func(t *testing.T) {
+			parentID := newTree(t, conn).id(tc.parent)
+			archived := tc.child(parentID).with("name", "Main").with("status", "archived")
+			mustInsert(t, conn, tc.table, archived)
+			mustInsert(t, conn, tc.table, archived.with("name", "MAIN"))
+
+			mustInsert(t, conn, tc.table, tc.child(parentID).with("name", "main"))
+			_, err := insert(t.Context(), conn, tc.table, tc.child(parentID).with("name", "Main"))
+			if !postgres.IsUniqueViolation(err, tc.index) {
+				t.Errorf("second name in use: got %v, want a %s violation", err, tc.index)
+			}
+		})
+	}
+}
+
+// New rows below a venue start like a new venue: version 1, halls active, layouts as drafts.
+func TestTheVenueTreeDefaultsStatusAndVersion(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	tr := newTree(t, conn)
+
+	tests := []struct {
+		table      string
+		wantStatus string // "" for a table without a status
+	}{
+		{"halls", "active"},
+		{"layouts", "draft"},
+		{"sections", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.table, func(t *testing.T) {
+			// tc.table is one of treeTables, never input, so building the SQL from it is safe.
+			where := ` FROM ` + tc.table + ` WHERE id = $1`
+			var version int
+			if err := conn.QueryRow(t.Context(), `SELECT version`+where, tr.id(tc.table)).Scan(&version); err != nil {
+				t.Fatalf("select version: %v", err)
+			}
+			if version != 1 {
+				t.Errorf("version %d, want 1", version)
+			}
+			if tc.wantStatus == "" {
+				return
+			}
+			var status string
+			if err := conn.QueryRow(t.Context(), `SELECT status`+where, tr.id(tc.table)).Scan(&status); err != nil {
+				t.Fatalf("select status: %v", err)
+			}
+			if status != tc.wantStatus {
+				t.Errorf("status %q, want %q", status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// tree holds the ids of one venue with one hall, one layout and one section.
+type tree struct {
+	venue, hall, layout, section string
+}
+
+// treeTables lists the levels of a tree from the top down.
+var treeTables = []string{"venues", "halls", "layouts", "sections"}
+
+func newTree(t *testing.T, conn *pgx.Conn) tree {
+	t.Helper()
+	var tr tree
+	tr.venue = mustInsert(t, conn, "venues", validVenue())
+	tr.hall = mustInsert(t, conn, "halls", validHall(tr.venue))
+	tr.layout = mustInsert(t, conn, "layouts", validLayout(tr.hall))
+	tr.section = mustInsert(t, conn, "sections", validSection(tr.layout))
+	return tr
+}
+
+// id returns the id of the tree's row in table.
+func (tr tree) id(table string) string {
+	return map[string]string{
+		"venues": tr.venue, "halls": tr.hall, "layouts": tr.layout, "sections": tr.section,
+	}[table]
+}
+
+func exists(t *testing.T, conn *pgx.Conn, table, id string) bool {
+	t.Helper()
+	var found bool
+	// table is one of treeTables, never input, so building the SQL from it is safe.
+	err := conn.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM `+table+` WHERE id = $1)`, id).Scan(&found)
+	if err != nil {
+		t.Fatalf("check %s: %v", table, err)
+	}
+	return found
+}
+
+// Deleting a venue, hall or layout deletes everything below it (ON DELETE CASCADE), and nothing
+// above it or in another venue.
+func TestDeletingAParentDeletesEverythingBelowIt(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+
+	for level, table := range treeTables[:3] { // a section has nothing below it
+		t.Run(table, func(t *testing.T) {
+			deleted, kept := newTree(t, conn), newTree(t, conn)
+
+			if _, err := conn.Exec(t.Context(), `DELETE FROM `+table+` WHERE id = $1`, deleted.id(table)); err != nil {
+				t.Fatalf("delete from %s: %v", table, err)
+			}
+
+			for l, other := range treeTables {
+				wantLeft := l < level // only the levels above the deleted row stay
+				if got := exists(t, conn, other, deleted.id(other)); got != wantLeft {
+					t.Errorf("%s row of the changed tree: exists %t, want %t", other, got, wantLeft)
+				}
+				if !exists(t, conn, other, kept.id(other)) {
+					t.Errorf("%s row of the other tree was deleted", other)
+				}
+			}
+		})
 	}
 }

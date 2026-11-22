@@ -18,7 +18,7 @@ const (
 // exception translation (DataIntegrityViolationException), but by constraint name, so each rule
 // gets its own meaning:
 //
-//	if postgres.IsUniqueViolation(err, "layouts_venue_id_name_key") {
+//	if postgres.IsUniqueViolation(err, "layouts_hall_id_name_key") {
 //		return ErrLayoutNameTaken
 //	}
 //

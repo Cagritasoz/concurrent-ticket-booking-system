@@ -11,7 +11,7 @@ golang-migrate keeps the state in the `schema_migrations` table, which holds **o
 per migration, golang-migrate overwrites its single row.
 
 - **version** is the number of the last migration that is fully applied, the six-digit prefix of
-  its files: `000002_create_venue_layouts.up.sql` is version 2.
+  its files: `000002_create_halls_layouts_and_sections.up.sql` is version 2.
 - **No migration applied** is an empty table. golang-migrate calls this version `-1`; our code
   shows it as 0 (in `make migrate-version` and in error messages), and `force version=0` means it.
 - **dirty** means a migration started and was never marked as finished.

@@ -252,7 +252,8 @@ is a 409.
 **Deleting a venue:** `DELETE /api/v1/admin/venues/{id}` with `If-Match` answers `204 No
 Content`; a venue that doesn't exist (also one just deleted) is a `404`. Active and archived
 venues can be deleted while nothing uses them; once events exist (M1 step 8), a venue that any
-event uses can only be archived.
+event uses can only be archived. The venue's halls, their layouts and sections are deleted with
+it, by the database (`ON DELETE CASCADE`).
 
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:

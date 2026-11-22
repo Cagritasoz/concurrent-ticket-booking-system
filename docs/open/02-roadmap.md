@@ -15,7 +15,8 @@
   (venues get a lifecycle, archive and restore, and optimistic locking with `ETag` and a required
   `If-Match`; their capacity moved to halls), step 6a (the `halls`, `layouts` and `sections`
   tables, with their status and version columns).
-- **Next:** M1 step 6b, halls end to end, built like venues (archive, restore, `If-Match`).
+- **Next:** M1 step 6b, halls end to end, built like venues (archive, restore, `If-Match`). Step
+  6c's first layout queries exist; they don't use the status and version yet.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -111,7 +112,7 @@ standing section.
 | 5c | **Venue lifecycle and optimistic locking:** `status` (active / archived) with archive and restore as compare-and-set requests, the list filtered by status; `version` sent as the `ETag`, a required `If-Match` on every change (412 / 428); DELETE only with `If-Match`; the venue's capacity removed (halls have it) | `@Version` + `ETag` / `If-Match` + soft delete | Done |
 | 6a | **Schema:** the `halls` table (a venue's rooms), the `layouts` table (a hall's setups) and the `sections` table (each layout's sections, either seated or standing with a capacity), names unique per parent among what isn't archived, deleted with their parent; a status for halls and layouts, a version for all three | `@OneToMany(cascade = REMOVE)` child entities, written as a Flyway migration | Done |
 | 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | Not started |
-| 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | Not started |
+| 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | In progress (first queries done; status and version not used yet) |
 | 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
 | 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of a hall | Another `@RestController` + service | Not started |
@@ -214,6 +215,13 @@ standing section.
   below it (`ON DELETE CASCADE`). sqlc now generates `eventdb.Hall`, `eventdb.Layout` and
   `eventdb.Section`. Tests try each table rule, the defaults, the case-insensitive names by
   index name at every level, names freed by archiving, and the cascade from each level.
+- **Step 6c (in progress, first queries done):** `internal/event/queries/layouts.sql`: create,
+  get, get-and-lock (`FOR UPDATE`), list a hall's layouts (all of them, by name ignoring case,
+  then id, no paging), update (name and description; a layout never changes hall) and delete.
+  They don't use the status and version yet: listing by status, the version check, compare-and-set
+  status changes and locking the hall come with the rest of 6c. Tests against real Postgres check
+  each query, and that an unknown hall breaks `layouts_hall_id_fkey` and a taken name (on create
+  and on rename) breaks `layouts_hall_id_name_key`, the names the service will map to its errors.
 
 ### Planned M1 endpoints
 

@@ -11,13 +11,13 @@
 │   └── migrate/main.go              # migration command: up, down, version, force
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
-│   ├── event/                       # MODULE: venues so far; halls, layouts and sections have tables (events, tiers, tickets later in M1)
+│   ├── event/                       # MODULE: venues so far; halls and sections have tables, layouts also queries (events, tiers, tickets later in M1)
 │   │   ├── venue.go                 # Venue (the module's own type), VenueStatus, the venue errors, row → Venue
 │   │   ├── errors.go                # ErrVersionMismatch, shared by every versioned object of the module
 │   │   ├── venue_input.go           # VenueInput, its validation, ValidationError / FieldError
 │   │   ├── venue_service.go         # VenueService (Get, Create, List by status in keyset pages, Update in a locked transaction, Archive, Restore, Delete; every change checks the version) on top of the generated queries
-│   │   ├── queries/venues.sql       # the SQL sqlc reads
-│   │   └── eventdb/                 # sqlc-generated (db.go, models.go with Venue, Hall, Layout, Section; venues.sql.go) + hand-written tests
+│   │   ├── queries/                 # the SQL sqlc reads: venues.sql, layouts.sql
+│   │   └── eventdb/                 # sqlc-generated (db.go, models.go with Venue, Hall, Layout, Section; venues.sql.go, layouts.sql.go) + hand-written tests
 │   ├── platform/
 │   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)

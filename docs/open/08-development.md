@@ -75,17 +75,18 @@ The schema is built by numbered SQL files in `migrations/`, applied in order by 
 Go counterpart of Flyway). `schema_migrations` records the current version, like Flyway's
 `flyway_schema_history`. The files are embedded into `cmd/migrate`, so it works from any folder.
 
-**Changing the schema while the milestone isn't merged:** edit the migration that holds the
-table, so each table's whole structure stays in one file (migration 1 is the venues table,
-migration 2 the halls, layouts and sections). Databases that ran the old version must be
-recreated: the tests' always are; locally, delete the Postgres volume and run `make migrate-up`
-again.
+There is one migration per table, with its indexes: 1 venues, 2 halls, 3 layouts, 4 sections,
+5 seats, 6 events.
 
-**Adding a migration** (a new group of tables, or any change after the milestone merged into
-`main`):
+**Changing the schema while the milestone isn't merged:** edit the migration that holds the
+table, so each table's whole structure stays in one file. Databases that ran the old version
+must be recreated: the tests' always are; locally, delete the Postgres volume and run
+`make migrate-up` again.
+
+**Adding a migration** (a new table, or any change after the milestone merged into `main`):
 
 1. Create two files with the next number and a lowercase name:
-   `000003_create_events.up.sql` and `000003_create_events.down.sql`.
+   `000007_create_ticket_tiers.up.sql` and `000007_create_ticket_tiers.down.sql`.
 2. The up file makes the change; the down file undoes exactly that change.
 3. Check both directions: `make migrate-up`, `make migrate-down`, `make migrate-up`.
 4. Run `make generate`: sqlc reads the migrations as its schema, so a changed table changes the

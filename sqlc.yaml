@@ -36,6 +36,14 @@ sql:
             go_type:
               import: time
               type: Time
+          # An override covers only NOT NULL columns unless it says nullable; optional times
+          # (e.g. events.ends_at) become *time.Time, nil meaning NULL.
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
           # Map positions are plain numbers, not money, so float64 is precise enough (numeric
           # would otherwise become pgtype.Numeric).
           - column: venues.latitude

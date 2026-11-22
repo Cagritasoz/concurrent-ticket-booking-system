@@ -295,6 +295,18 @@ func validSection(layoutID string) row {
 	return row{"layout_id": layoutID, "name": "Floor", "kind": "standing", "capacity": 3000}
 }
 
+func validSeatedSection(layoutID string) row {
+	return row{"layout_id": layoutID, "name": "Block 101", "kind": "seated"}
+}
+
+func validSeat(sectionID string) row {
+	return row{"section_id": sectionID, "row_label": "A", "seat_label": "1", "row_position": 1, "seat_position": 1}
+}
+
+func validEvent(layoutID string) row {
+	return row{"layout_id": layoutID, "name": "Duman", "starts_at": "2027-03-14T20:00:00+03:00"}
+}
+
 // unknownID is a well-formed id that no row has.
 const unknownID = "5d8d4a43-0a8e-4f4c-9b59-0c6a1f3f8e21"
 
@@ -358,7 +370,7 @@ func TestLayouts_TableRules(t *testing.T) {
 func TestSections_TableRules(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 	layoutID := newTree(t, conn).layout
-	seated := validSection(layoutID).with("name", "Block 101").with("kind", "seated").with("capacity", nil)
+	seated := validSeatedSection(layoutID).with("name", "Balcony") // newTree already has a Block 101
 
 	tests := []ruleCase{
 		{"standing with a capacity", validSection(layoutID).with("name", "Pit"), ""},
@@ -379,6 +391,151 @@ func TestSections_TableRules(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			checkRule(t, conn, "sections", tc)
+		})
+	}
+}
+
+func TestSeats_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	tr := newTree(t, conn)
+	standingID := mustInsert(t, conn, "sections", validSection(tr.layout))
+
+	// Each case gets its own place, so the cases don't collide with each other's seats.
+	place := 10
+	seat := func() row {
+		place++
+		return validSeat(tr.section).
+			with("seat_label", strconv.Itoa(place)).
+			with("seat_position", place)
+	}
+
+	tests := []ruleCase{
+		{"required columns only", seat(), ""},
+		{"every column", seat().
+			with("row_label", "AA").
+			with("row_position", 27).
+			with("type", "wheelchair").
+			with("restricted_view", true).
+			with("view_note", "Pillar on the left").
+			with("aisle", true).
+			with("version", 4), ""},
+		{"companion seat", seat().with("type", "companion"), ""},
+		{"in a standing section", seat().with("section_id", standingID), foreignKeyViolation},
+		{"in an unknown section", seat().with("section_id", unknownID), foreignKeyViolation},
+		{"section kind other than seated", seat().with("section_kind", "standing"), checkViolation},
+		{"missing row label", seat().with("row_label", nil), notNullViolation},
+		{"blank seat label", seat().with("seat_label", " "), checkViolation},
+		{"label longer than 10", seat().with("row_label", strings.Repeat("A", 11)), checkViolation},
+		{"zero row position", seat().with("row_position", 0), checkViolation},
+		{"zero seat position", seat().with("seat_position", 0), checkViolation},
+		{"unknown type", seat().with("type", "vip"), checkViolation},
+		{"view note without a restricted view", seat().with("view_note", "Pillar"), checkViolation},
+		{"empty view note", seat().with("restricted_view", true).with("view_note", ""), checkViolation},
+		{"zero version", seat().with("version", 0), checkViolation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "seats", tc)
+		})
+	}
+}
+
+// A section can't have two seats at one place, or two seats with the same labels (ignoring
+// case). Other sections can repeat both. The services will tell the two apart by index name.
+func TestSeatsAreUniquePerPlaceAndLabel(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	tr := newTree(t, conn) // its seat is row A, seat 1, at position (1, 1)
+
+	_, err := insert(t.Context(), conn, "seats", validSeat(tr.section).with("seat_label", "2"))
+	if !postgres.IsUniqueViolation(err, "seats_section_id_position_key") {
+		t.Errorf("same place: got %v, want a seats_section_id_position_key violation", err)
+	}
+	_, err = insert(t.Context(), conn, "seats", validSeat(tr.section).with("row_label", "a").with("seat_position", 2))
+	if !postgres.IsUniqueViolation(err, "seats_section_id_label_key") {
+		t.Errorf("same labels: got %v, want a seats_section_id_label_key violation", err)
+	}
+	if _, err := insert(t.Context(), conn, "seats", validSeat(mustInsert(t, conn, "sections",
+		validSeatedSection(tr.layout).with("name", "Block 102")))); err != nil {
+		t.Errorf("same place and labels in another section: %v", err)
+	}
+}
+
+// The (id, kind) foreign key keeps seats in seated sections in both directions: a seat can't be
+// added to a standing section (TestSeats_TableRules), and a section with seats can't turn standing.
+func TestASectionWithSeatsCannotBecomeStanding(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	tr := newTree(t, conn)
+	empty := mustInsert(t, conn, "sections", validSeatedSection(tr.layout).with("name", "Block 102"))
+
+	toStanding := `UPDATE sections SET kind = 'standing', capacity = 100 WHERE id = $1`
+	_, err := conn.Exec(t.Context(), toStanding, tr.section)
+	if !postgres.IsForeignKeyViolation(err, "seats_section_id_fkey") {
+		t.Errorf("section with seats: got %v, want a seats_section_id_fkey violation", err)
+	}
+	if _, err := conn.Exec(t.Context(), toStanding, empty); err != nil {
+		t.Errorf("section without seats: %v", err)
+	}
+}
+
+func TestEvents_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	layoutID := newTree(t, conn).layout
+	event := func() row { return validEvent(layoutID) }
+	published := event().with("status", "published").with("published_at", "2027-01-10T12:00:00Z")
+
+	tests := []ruleCase{
+		{"required columns only", event(), ""},
+		{"every column", published.
+			with("description", "The album tour, with guests.").
+			with("ends_at", "2027-03-14T23:00:00+03:00").
+			with("doors_open_at", "2027-03-14T18:30:00+03:00").
+			with("version", 3), ""},
+		{"cancelled", published.with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), ""},
+		{"unknown layout", event().with("layout_id", unknownID), foreignKeyViolation},
+		{"missing layout", event().with("layout_id", nil), notNullViolation},
+		{"blank name", event().with("name", " "), checkViolation},
+		{"empty description", event().with("description", ""), checkViolation},
+		{"missing start", event().with("starts_at", nil), notNullViolation},
+		{"ends at the start", event().with("ends_at", "2027-03-14T20:00:00+03:00"), checkViolation},
+		{"doors open after the start", event().with("doors_open_at", "2027-03-14T20:30:00+03:00"), checkViolation},
+		{"unknown status", event().with("status", "completed"), checkViolation},
+		{"draft with a publish time", event().with("published_at", "2027-01-10T12:00:00Z"), checkViolation},
+		{"published without a publish time", event().with("status", "published"), checkViolation},
+		{"cancelled without a cancel time", published.with("status", "cancelled"), checkViolation},
+		{"cancel time on a published event", published.with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
+		{"cancelled before it was published", published.with("status", "cancelled").with("cancelled_at", "2027-01-01T00:00:00Z"), checkViolation},
+		{"cancelled draft", event().with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
+		{"zero version", event().with("version", 0), checkViolation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "events", tc)
+		})
+	}
+}
+
+// Events reference their layout without CASCADE: deleting the layout, its hall or its venue is
+// refused while an event uses it, and nothing is deleted. Archiving is the way to retire them.
+func TestAnEventKeepsItsLayoutHallAndVenue(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+
+	for _, table := range []string{"venues", "halls", "layouts"} {
+		t.Run(table, func(t *testing.T) {
+			tr := newTree(t, conn)
+			eventID := mustInsert(t, conn, "events", validEvent(tr.layout))
+
+			_, err := conn.Exec(t.Context(), `DELETE FROM `+table+` WHERE id = $1`, tr.id(table))
+			if !postgres.IsForeignKeyViolation(err, "events_layout_id_fkey") {
+				t.Fatalf("got %v, want an events_layout_id_fkey violation", err)
+			}
+			for _, other := range treeTables {
+				if !exists(t, conn, other, tr.id(other)) {
+					t.Errorf("the %s row was deleted", other)
+				}
+			}
+			if !exists(t, conn, "events", eventID) {
+				t.Error("the event was deleted")
+			}
 		})
 	}
 }
@@ -445,25 +602,29 @@ func TestArchivedHallsAndLayoutsFreeTheirName(t *testing.T) {
 	}
 }
 
-// New rows below a venue start like a new venue: version 1, halls active, layouts as drafts.
-func TestTheVenueTreeDefaultsStatusAndVersion(t *testing.T) {
+// New rows start like a new venue: version 1; halls active, layouts and events as drafts.
+func TestNewRowsDefaultStatusAndVersion(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 	tr := newTree(t, conn)
+	eventID := mustInsert(t, conn, "events", validEvent(tr.layout))
 
 	tests := []struct {
 		table      string
+		id         string
 		wantStatus string // "" for a table without a status
 	}{
-		{"halls", "active"},
-		{"layouts", "draft"},
-		{"sections", ""},
+		{"halls", tr.hall, "active"},
+		{"layouts", tr.layout, "draft"},
+		{"sections", tr.section, ""},
+		{"seats", tr.seat, ""},
+		{"events", eventID, "draft"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.table, func(t *testing.T) {
-			// tc.table is one of treeTables, never input, so building the SQL from it is safe.
+			// tc.table comes from the list above, never input, so building the SQL from it is safe.
 			where := ` FROM ` + tc.table + ` WHERE id = $1`
 			var version int
-			if err := conn.QueryRow(t.Context(), `SELECT version`+where, tr.id(tc.table)).Scan(&version); err != nil {
+			if err := conn.QueryRow(t.Context(), `SELECT version`+where, tc.id).Scan(&version); err != nil {
 				t.Fatalf("select version: %v", err)
 			}
 			if version != 1 {
@@ -473,7 +634,7 @@ func TestTheVenueTreeDefaultsStatusAndVersion(t *testing.T) {
 				return
 			}
 			var status string
-			if err := conn.QueryRow(t.Context(), `SELECT status`+where, tr.id(tc.table)).Scan(&status); err != nil {
+			if err := conn.QueryRow(t.Context(), `SELECT status`+where, tc.id).Scan(&status); err != nil {
 				t.Fatalf("select status: %v", err)
 			}
 			if status != tc.wantStatus {
@@ -483,13 +644,13 @@ func TestTheVenueTreeDefaultsStatusAndVersion(t *testing.T) {
 	}
 }
 
-// tree holds the ids of one venue with one hall, one layout and one section.
+// tree holds the ids of one venue with one hall, one layout, one seated section and one seat.
 type tree struct {
-	venue, hall, layout, section string
+	venue, hall, layout, section, seat string
 }
 
 // treeTables lists the levels of a tree from the top down.
-var treeTables = []string{"venues", "halls", "layouts", "sections"}
+var treeTables = []string{"venues", "halls", "layouts", "sections", "seats"}
 
 func newTree(t *testing.T, conn *pgx.Conn) tree {
 	t.Helper()
@@ -497,14 +658,15 @@ func newTree(t *testing.T, conn *pgx.Conn) tree {
 	tr.venue = mustInsert(t, conn, "venues", validVenue())
 	tr.hall = mustInsert(t, conn, "halls", validHall(tr.venue))
 	tr.layout = mustInsert(t, conn, "layouts", validLayout(tr.hall))
-	tr.section = mustInsert(t, conn, "sections", validSection(tr.layout))
+	tr.section = mustInsert(t, conn, "sections", validSeatedSection(tr.layout))
+	tr.seat = mustInsert(t, conn, "seats", validSeat(tr.section))
 	return tr
 }
 
 // id returns the id of the tree's row in table.
 func (tr tree) id(table string) string {
 	return map[string]string{
-		"venues": tr.venue, "halls": tr.hall, "layouts": tr.layout, "sections": tr.section,
+		"venues": tr.venue, "halls": tr.hall, "layouts": tr.layout, "sections": tr.section, "seats": tr.seat,
 	}[table]
 }
 
@@ -519,12 +681,12 @@ func exists(t *testing.T, conn *pgx.Conn, table, id string) bool {
 	return found
 }
 
-// Deleting a venue, hall or layout deletes everything below it (ON DELETE CASCADE), and nothing
-// above it or in another venue.
+// Deleting a venue, hall, layout or section deletes everything below it (ON DELETE CASCADE), and
+// nothing above it or in another venue.
 func TestDeletingAParentDeletesEverythingBelowIt(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 
-	for level, table := range treeTables[:3] { // a section has nothing below it
+	for level, table := range treeTables[:4] { // a seat has nothing below it
 		t.Run(table, func(t *testing.T) {
 			deleted, kept := newTree(t, conn), newTree(t, conn)
 

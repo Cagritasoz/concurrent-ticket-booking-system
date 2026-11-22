@@ -76,8 +76,12 @@ func readBody(c *gin.Context, mediaTypes ...string) ([]byte, bool) {
 	}
 
 	// MaxBytesReader returns an error once more than the limit is read, and tells the server to
-	// close the connection afterwards instead of reading the rest.
-	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes))
+	// close the connection afterward instead of reading the rest. Closing it closes the request
+	// body, which the server would also do after the handler; closing it here, where it is opened,
+	// makes that visible (closing a request body twice is safe).
+	limited := http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBodyBytes)
+	defer func() { _ = limited.Close() }()
+	body, err := io.ReadAll(limited)
 	if err != nil {
 		status, detail := describeDecodeError(err) // 413 for a body over the limit
 		writeProblem(c, status, detail)

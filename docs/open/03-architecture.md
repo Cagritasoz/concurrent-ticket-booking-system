@@ -23,7 +23,7 @@
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
 │   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, strict JSON decoding, JSON Merge Patch (patch.go), ETag and If-Match (etag.go), Problem Details errors
-├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
+├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), one per table, embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
 ├── sqlc.yaml                        # sqlc settings: schema from migrations/, queries per module, Go types

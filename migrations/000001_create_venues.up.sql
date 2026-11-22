@@ -1,5 +1,6 @@
--- A venue is a building where events happen: an arena, a club, a theatre, a cinema. Its rooms
--- (halls), their setups (layouts) and sections are the tables of migration 2.
+-- A venue is a building where events happen: an arena, a club, a theater, a cinema. Below it, one
+-- table per migration: its rooms (halls, 2), their setups (layouts, 3), their parts (sections, 4)
+-- and the seats of seated sections (seats, 5). Events (6) take place in a layout.
 --
 -- Optional columns allow NULL but reject empty or blank text: a CHECK passes when its expression is
 -- NULL, so the same check works for required columns (with NOT NULL) and optional ones (without).

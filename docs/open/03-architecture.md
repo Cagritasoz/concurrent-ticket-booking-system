@@ -12,16 +12,17 @@
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
 │   ├── event/                       # MODULE: venues so far (events, tiers, tickets later in M1)
-│   │   ├── venue.go                 # Venue (the module's own type), ErrVenueNotFound, row → Venue
+│   │   ├── venue.go                 # Venue (the module's own type), VenueStatus, the venue errors, row → Venue
+│   │   ├── errors.go                # ErrVersionMismatch, shared by every versioned object of the module
 │   │   ├── venue_input.go           # VenueInput, its validation, ValidationError / FieldError
-│   │   ├── venue_service.go         # VenueService (Get, Create, List in keyset pages, Update in a locked transaction, Delete) on top of the generated queries
+│   │   ├── venue_service.go         # VenueService (Get, Create, List by status in keyset pages, Update in a locked transaction, Archive, Restore, Delete; every change checks the version) on top of the generated queries
 │   │   ├── queries/venues.sql       # the SQL sqlc reads
 │   │   └── eventdb/                 # sqlc-generated (db.go, models.go, venues.sql.go) + hand-written tests
 │   ├── platform/
 │   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
-│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, strict JSON decoding, JSON Merge Patch (patch.go), Problem Details errors
+│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, strict JSON decoding, JSON Merge Patch (patch.go), ETag and If-Match (etag.go), Problem Details errors
 ├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
@@ -53,7 +54,8 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   │   ├── elastic/                 # (planned, M8) client constructor
 │   │   └── telemetry/               # slog setup, request IDs; Prometheus registry later (M9)
 │   ├── auth/                        # (planned, M2) OIDC verifier, Principal{Subject, Roles}, ctx helpers (no Gin)
-│   ├── event/                       # MODULE: venues, events, price tiers, tickets (venue service started; the rest M1)
+│   ├── org/                         # (planned, M2) MODULE: organizations (venue operators, organizers), memberships, venue access grants
+│   ├── event/                       # MODULE: venues, halls, layouts, sections, seats, events, price tiers, tickets (venue service done; the rest M1)
 │   │   ├── venue.go venue_service.go ...  # the module's types, errors and services
 │   │   ├── queries/*.sql
 │   │   └── eventdb/                 # sqlc-generated
@@ -66,6 +68,7 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   │   └── stripepay/               # PaymentGateway implementation (stripe-go) + webhook signature verification
 │   ├── search/                      # (planned, M8) MODULE: mapping, outbox consumer, queries, alias-swap rebuild
 │   └── httpapi/                     # Gin: router, middleware, handlers, error → status mapping, health
+├── web/                             # (planned, after M2) the frontend: TypeScript + React, admin and customer UI
 ├── examples/                        # early learning code, not part of the app
 ├── migrations/                      # golang-migrate files, shared by all modules (one schema history)
 ├── sqlc.yaml

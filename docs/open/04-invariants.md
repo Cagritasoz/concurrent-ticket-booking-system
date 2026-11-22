@@ -1,8 +1,8 @@
 # 04 · Correctness invariants
 
 These rules must hold at all times, including under concurrency, retries, crashes and outages.
-None of them is implemented yet; they guide the design of milestones M1–M8 and each one gets
-tests when it is built (see the [roadmap](02-roadmap.md)).
+Most are not implemented yet (I15 is, for venues); they guide the design of milestones M1–M8,
+and each one gets tests when it is built (see the [roadmap](02-roadmap.md)).
 
 | # | Invariant | How it is enforced |
 |---|---|---|
@@ -18,8 +18,9 @@ tests when it is built (see the [roadmap](02-roadmap.md)).
 | I10 | Redis never grants ownership; losing Redis or its data can't cause a double sale. | Redis is only a contention pre-filter; Postgres decides. |
 | I11 | Only the holder can release a hold. | The Redis value is the booking ID; release uses a Lua compare-and-delete. |
 | I12 | Elasticsearch never drives booking or pricing, and it converges to Postgres. | Transactional outbox, external versioning, alias-swap rebuild; only coarse availability (e.g. a sold-out flag) is stored in Elasticsearch. |
-| I13 | Customers see only their own bookings; admins manage only their own events. | A role check in middleware + an ownership check in the services. |
+| I13 | Customers see only their own bookings; venue managers change only their own venues' maps; organizers manage only their own events, and only in venues that granted them access. | A role check in middleware + an ownership check in the services (organization memberships and venue access grants, M2). |
 | I14 | Held or sold inventory can't be removed underneath customers. | Admin edits lock the event `FOR UPDATE`; booking creation takes `FOR SHARE`; cancelling an event triggers refunds. |
+| I15 | An admin change never overwrites a change its author hasn't seen. | Every changeable object has a `version`, sent as its `ETag`; changes require `If-Match` with it (412 if it moved on, 428 if missing) and run with the row locked. |
 
 ## Redis failure behavior
 

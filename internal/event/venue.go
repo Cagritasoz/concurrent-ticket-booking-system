@@ -1,6 +1,6 @@
-// Package event is the admin side of the system: venues so far; their layouts, events, ticket
-// tiers and tickets follow in M1. Other packages (httpapi, later booking) use its services and
-// types, never its generated eventdb package.
+// Package event is the admin side of the system: venues so far; their halls, layouts, events,
+// ticket tiers and tickets follow in M1. Other packages (httpapi, later booking) use its services
+// and types, never its generated eventdb package.
 package event
 
 import (
@@ -11,11 +11,33 @@ import (
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/event/eventdb"
 )
 
-// ErrVenueNotFound is returned when no venue has the requested id. Callers check it with
-// errors.Is; httpapi turns it into 404 Not Found.
-var ErrVenueNotFound = errors.New("venue not found")
+// The venue's errors. Callers check them with errors.Is; httpapi turns ErrVenueNotFound into
+// 404 Not Found and the other two into 409 Conflict.
+var (
+	// ErrVenueNotFound: no venue has the requested id.
+	ErrVenueNotFound = errors.New("venue not found")
+	// ErrVenueArchived: the venue is archived, so it can't be changed or archived again; restore
+	// it first.
+	ErrVenueArchived = errors.New("venue is archived")
+	// ErrVenueNotArchived: the venue is active, so there is nothing to restore.
+	ErrVenueNotArchived = errors.New("venue is not archived")
+)
 
-// Venue is a place where events happen, as the rest of the app sees it. It is filled from
+// VenueStatus is where a venue is in its life. Venues are created active.
+//
+//	active -> Archive -> archived -> Restore -> active
+//
+// An archived venue stays in the database for history (once events exist, past events point at
+// it) but is hidden from the default list and can't be changed. A venue nothing ever used can be
+// deleted instead.
+type VenueStatus string
+
+const (
+	VenueActive   VenueStatus = "active"
+	VenueArchived VenueStatus = "archived"
+)
+
+// Venue is a building where events happen, as the rest of the app sees it. It is filled from
 // eventdb.Venue (one row of the venues table) by toVenue, so a change in the table changes
 // toVenue, not every user of Venue. Optional values are pointers: nil means "not set".
 type Venue struct {
@@ -25,9 +47,12 @@ type Venue struct {
 	Address     Address
 	Location    *Location // nil if the map position isn't known
 	TimeZone    string    // IANA name, e.g. Europe/Istanbul
-	Capacity    *int      // maximum occupancy, nil if not known
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	Status      VenueStatus
+	// Version is 1 for a new venue and grows by 1 on every change. Every change names the
+	// version it was based on, and is refused with ErrVersionMismatch if the venue has moved on.
+	Version   int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Address is an international postal address, the same shape Stripe uses. Not every country has
@@ -63,18 +88,17 @@ func toVenue(row eventdb.Venue) Venue {
 			PostalCode:  row.PostalCode,
 			CountryCode: row.CountryCode,
 		},
-		TimeZone:  row.Timezone,
+		TimeZone: row.Timezone,
+		Status:   VenueStatus(row.Status), // the table's CHECK allows only our two values
+		// The column is a Postgres integer (int32); Go code uses int unless there is a reason not
+		// to. Every int32 fits in an int, so this conversion is always safe.
+		Version:   int(row.Version),
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
 	}
 	// The CHECK venues_coordinates_together guarantees both are set or neither.
 	if row.Latitude != nil && row.Longitude != nil {
 		v.Location = &Location{Latitude: *row.Latitude, Longitude: *row.Longitude}
-	}
-	// The column is a Postgres integer (int32); Go code uses int unless there is a reason not to.
-	// Every int32 fits in an int, so this conversion is always safe.
-	if row.Capacity != nil {
-		v.Capacity = new(int(*row.Capacity))
 	}
 	return v
 }

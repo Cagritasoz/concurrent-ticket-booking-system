@@ -111,7 +111,6 @@ func TestGetVenue_ReturnsTheVenue(t *testing.T) {
 				Latitude:     new(41.108934),
 				Longitude:    new(29.010547),
 				Timezone:     "Europe/Istanbul",
-				Capacity:     new(int32(5000)),
 			},
 			want: `{
 				"id": "%[1]s",
@@ -127,7 +126,8 @@ func TestGetVenue_ReturnsTheVenue(t *testing.T) {
 				},
 				"location": {"latitude": 41.108934, "longitude": 29.010547},
 				"time_zone": "Europe/Istanbul",
-				"capacity": 5000,
+				"status": "active",
+				"version": 1,
 				"created_at": "%[2]s",
 				"updated_at": "%[3]s"
 			}`,
@@ -155,7 +155,8 @@ func TestGetVenue_ReturnsTheVenue(t *testing.T) {
 				},
 				"location": null,
 				"time_zone": "Europe/Istanbul",
-				"capacity": null,
+				"status": "active",
+				"version": 1,
 				"created_at": "%[2]s",
 				"updated_at": "%[3]s"
 			}`,
@@ -175,6 +176,7 @@ func TestGetVenue_ReturnsTheVenue(t *testing.T) {
 			}
 			checkJSON(t, rec.Body.String(), fmt.Sprintf(tt.want,
 				stored.ID, timeJSON(stored.CreatedAt), timeJSON(stored.UpdatedAt)))
+			checkETag(t, rec, `"1"`) // the version, for a later If-Match
 		})
 	}
 }
@@ -246,13 +248,30 @@ func post(t *testing.T, handler http.Handler, path, contentType, body string) *h
 // send sends a request with this method, body and Content-Type (none if "") to handler, in memory.
 func send(t *testing.T, handler http.Handler, method, path, contentType, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return sendIfMatch(t, handler, method, path, "", contentType, body)
+}
+
+// sendIfMatch is send with an If-Match header (none if ""), for the requests that change a venue.
+func sendIfMatch(t *testing.T, handler http.Handler, method, path, ifMatch, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+// checkETag fails the test unless rec has this ETag header, e.g. `"2"`.
+func checkETag(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	if got := rec.Header().Get("ETag"); got != want {
+		t.Errorf("ETag: got %s, want %s", got, want)
+	}
 }
 
 const venuesPath = "/api/v1/admin/venues"
@@ -279,8 +298,7 @@ func TestCreateVenue_Returns201WithTheVenueAndItsLocation(t *testing.T) {
 			"country_code": "TR"
 		},
 		"location": {"latitude": 41.108934, "longitude": 29.010547},
-		"time_zone": "Europe/Istanbul",
-		"capacity": 5000
+		"time_zone": "Europe/Istanbul"
 	}`)
 
 	if rec.Code != http.StatusCreated {
@@ -310,13 +328,15 @@ func TestCreateVenue_Returns201WithTheVenueAndItsLocation(t *testing.T) {
 		},
 		"location": {"latitude": 41.108934, "longitude": 29.010547},
 		"time_zone": "Europe/Istanbul",
-		"capacity": 5000,
+		"status": "active",
+		"version": 1,
 		"created_at": %q,
 		"updated_at": %q
 	}`, created.ID, created.CreatedAt, created.UpdatedAt))
 	if _, err := uuid.Parse(created.ID); err != nil {
 		t.Errorf("id %q is not a UUID", created.ID)
 	}
+	checkETag(t, rec, `"1"`)
 
 	// The Location header points at the new venue, and reading it gives the same body.
 	location := rec.Header().Get("Location")
@@ -336,8 +356,8 @@ func TestCreateVenue_InvalidFieldsAre400WithEveryProblem(t *testing.T) {
 	rec := post(t, router, venuesPath, "application/json", `{
 		"name": " ",
 		"address": {"line1": "Huzur Mah. 1", "city": "Istanbul", "country_code": "tr"},
-		"time_zone": "Mars/Olympus_Mons",
-		"capacity": 0
+		"location": {"latitude": 91, "longitude": 29},
+		"time_zone": "Mars/Olympus_Mons"
 	}`)
 
 	checkProblem(t, rec, http.StatusBadRequest, `{
@@ -349,8 +369,8 @@ func TestCreateVenue_InvalidFieldsAre400WithEveryProblem(t *testing.T) {
 		"errors": [
 			{"field": "name", "message": "is required"},
 			{"field": "address.country_code", "message": "must be an ISO 3166-1 alpha-2 country code: two capital letters, e.g. TR"},
-			{"field": "time_zone", "message": "must be an IANA time zone name, e.g. Europe/Istanbul"},
-			{"field": "capacity", "message": "must be between 1 and 2147483647"}
+			{"field": "location.latitude", "message": "must be between -90 and 90"},
+			{"field": "time_zone", "message": "must be an IANA time zone name, e.g. Europe/Istanbul"}
 		]
 	}`)
 	var count int
@@ -401,11 +421,16 @@ func TestCreateVenue_UnusableBodies(t *testing.T) {
 		{"not JSON", "application/json", `{name: "Arena"}`, http.StatusBadRequest,
 			"the request body is not valid JSON: invalid character 'n' looking for beginning of object key string (at byte 2)"},
 		{"array instead of object", "application/json", `[]`, http.StatusBadRequest, "the request body must be a JSON object"},
-		{"number as string", "application/json", `{"capacity": "5000"}`, http.StatusBadRequest, "capacity must be a whole number"},
-		{"fraction for a whole number", "application/json", `{"capacity": 50.5}`, http.StatusBadRequest, "capacity must be a whole number"},
+		{"number as string", "application/json", `{"location": {"latitude": "41.1"}}`, http.StatusBadRequest,
+			"location.latitude must be a number"},
 		{"wrong type in a nested field", "application/json", `{"address": {"city": 7}}`, http.StatusBadRequest,
 			"address.city must be a string"},
-		{"unknown field", "application/json", `{"capcity": 5000}`, http.StatusBadRequest, `unknown field "capcity"`},
+		{"unknown field", "application/json", `{"title": "Arena"}`, http.StatusBadRequest, `unknown field "title"`},
+		// Capacity belongs to halls; status and version change only through their own requests.
+		{"capacity is not a venue field", "application/json", `{"capacity": 5000}`, http.StatusBadRequest,
+			`unknown field "capacity"`},
+		{"status can't be set", "application/json", `{"status": "archived"}`, http.StatusBadRequest,
+			`unknown field "status"`},
 		{"two objects", "application/json", validVenueJSON + `{}`, http.StatusBadRequest,
 			"the request body must contain one JSON object and nothing after it"},
 		{"too large", "application/json", `{"name": "` + strings.Repeat("a", maxRequestBodyBytes) + `"}`,
@@ -522,12 +547,41 @@ func TestListVenues_PageBody(t *testing.T) {
 			},
 			"location": null,
 			"time_zone": "Europe/Istanbul",
-			"capacity": null,
+			"status": "active",
+			"version": 1,
 			"created_at": %q,
 			"updated_at": %q
 		}],
 		"next_cursor": null
 	}`, stored.ID, timeJSON(stored.CreatedAt), timeJSON(stored.UpdatedAt)))
+	// A list has no ETag: each venue's version is in the body instead.
+	checkETag(t, rec, "")
+}
+
+// The list shows active venues unless ?status=archived asks for the archived ones.
+func TestListVenues_StatusSelectsActiveOrArchived(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	insertVenue(t, pool, minimalVenue("Club"))
+	archived := insertVenue(t, pool, minimalVenue("Arena"))
+	if rec := sendIfMatch(t, router, http.MethodPost, venuesPath+"/"+archived.ID.String()+"/archive", `"1"`, "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("archive: status %d, body %s", rec.Code, rec.Body)
+	}
+
+	for query, want := range map[string]string{"": "Club", "status=active": "Club", "status=archived": "Arena"} {
+		page := getPage(t, router, mustParseQuery(t, query))
+		if len(page.Venues) != 1 || page.Venues[0].Name != want {
+			t.Errorf("?%s: got %+v, want only %s", query, page.Venues, want)
+		}
+	}
+}
+
+func mustParseQuery(t *testing.T, query string) url.Values {
+	t.Helper()
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", query, err)
+	}
+	return values
 }
 
 func TestListVenues_NoVenuesIsAnEmptyList(t *testing.T) {
@@ -575,6 +629,7 @@ func TestListVenues_InvalidQueryIs400(t *testing.T) {
 		{"cursor with an id that isn't a UUID", "cursor=" +
 			base64.RawURLEncoding.EncodeToString([]byte(`{"name":"Arena","id":"7"}`)), badCursor},
 		{"both wrong: every problem at once", "limit=ten&cursor=%21%21", notANumber + "," + badCursor},
+		{"unknown status", "status=closed", `{"field": "status", "message": "must be active or archived"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -623,14 +678,20 @@ func fullVenueParams() eventdb.CreateVenueParams {
 		Latitude:     new(41.108934),
 		Longitude:    new(29.010547),
 		Timezone:     "Europe/Istanbul",
-		Capacity:     new(int32(5000)),
 	}
 }
 
-// patch sends a PATCH request with this body as JSON Merge Patch.
-func patch(t *testing.T, handler http.Handler, path, body string) *httptest.ResponseRecorder {
+// patch sends a PATCH request with this body as JSON Merge Patch, for the version in ifMatch.
+func patch(t *testing.T, handler http.Handler, path, ifMatch, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	return send(t, handler, http.MethodPatch, path, mergePatchContentType, body)
+	return sendIfMatch(t, handler, http.MethodPatch, path, ifMatch, mergePatchContentType, body)
+}
+
+// action sends a POST to one of a venue's action endpoints (archive, restore), for the version
+// in ifMatch. The actions have no body.
+func action(t *testing.T, handler http.Handler, path, name, ifMatch string) *httptest.ResponseRecorder {
+	t.Helper()
+	return sendIfMatch(t, handler, http.MethodPost, path+"/"+name, ifMatch, "", "")
 }
 
 func TestPatchVenue_ChangesOnlyTheSentFields(t *testing.T) {
@@ -640,7 +701,7 @@ func TestPatchVenue_ChangesOnlyTheSentFields(t *testing.T) {
 
 	// Objects are merged: only the city and the region of the address change, only the
 	// latitude of the location. Fields left out keep their values; null clears one.
-	rec := patch(t, router, path, `{
+	rec := patch(t, router, path, `"1"`, `{
 		"name": "Volkswagen Arena Istanbul",
 		"description": null,
 		"address": {"city": "Ankara", "region": null},
@@ -670,10 +731,12 @@ func TestPatchVenue_ChangesOnlyTheSentFields(t *testing.T) {
 		},
 		"location": {"latitude": 39.92, "longitude": 29.010547},
 		"time_zone": "Europe/Istanbul",
-		"capacity": 5000,
+		"status": "active",
+		"version": 2,
 		"created_at": %q,
 		"updated_at": %q
 	}`, stored.ID, timeJSON(stored.CreatedAt), timeJSON(body.UpdatedAt)))
+	checkETag(t, rec, `"2"`) // the new version, for the next change
 	if !body.UpdatedAt.After(stored.UpdatedAt) {
 		t.Errorf("updated_at %v is not after %v", body.UpdatedAt, stored.UpdatedAt)
 	}
@@ -681,20 +744,22 @@ func TestPatchVenue_ChangesOnlyTheSentFields(t *testing.T) {
 	// The response is what was stored.
 	got := get(t, router, path)
 	checkJSON(t, got.Body.String(), rec.Body.String())
+	checkETag(t, got, `"2"`)
 }
 
 func TestPatchVenue_AcceptsMergePatchAndPlainJSON(t *testing.T) {
 	router, pool, _ := newVenueRouter(t)
 	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
 
-	for _, contentType := range []string{mergePatchContentType, "application/json; charset=utf-8"} {
-		rec := send(t, router, http.MethodPatch, path, contentType, `{"capacity": 6000}`)
+	for i, contentType := range []string{mergePatchContentType, "application/json; charset=utf-8"} {
+		ifMatch := fmt.Sprintf(`"%d"`, i+1) // each change raises the version
+		rec := sendIfMatch(t, router, http.MethodPatch, path, ifMatch, contentType, `{"name": "Arena"}`)
 		if rec.Code != http.StatusOK {
 			t.Errorf("Content-Type %s: status %d, want 200; body %s", contentType, rec.Code, rec.Body)
 		}
 	}
 
-	rec := send(t, router, http.MethodPatch, path, "text/plain", `{"capacity": 6000}`)
+	rec := sendIfMatch(t, router, http.MethodPatch, path, `"3"`, "text/plain", `{"name": "Arena"}`)
 	checkProblem(t, rec, http.StatusUnsupportedMediaType, `{
 		"type": "about:blank",
 		"title": "Unsupported Media Type",
@@ -711,11 +776,10 @@ func TestPatchVenue_InvalidResultIs400AndStoresNothing(t *testing.T) {
 
 	// The patched venue is checked with the same rules as a new one: required fields set to
 	// null are missing, and the address set to null leaves all its required fields empty.
-	rec := patch(t, router, path, `{
+	rec := patch(t, router, path, `"1"`, `{
 		"name": null,
 		"address": null,
-		"time_zone": "Mars/Olympus_Mons",
-		"capacity": 0
+		"time_zone": "Mars/Olympus_Mons"
 	}`)
 
 	checkProblem(t, rec, http.StatusBadRequest, `{
@@ -729,11 +793,10 @@ func TestPatchVenue_InvalidResultIs400AndStoresNothing(t *testing.T) {
 			{"field": "address.line1", "message": "is required"},
 			{"field": "address.city", "message": "is required"},
 			{"field": "address.country_code", "message": "must be an ISO 3166-1 alpha-2 country code: two capital letters, e.g. TR"},
-			{"field": "time_zone", "message": "must be an IANA time zone name, e.g. Europe/Istanbul"},
-			{"field": "capacity", "message": "must be between 1 and 2147483647"}
+			{"field": "time_zone", "message": "must be an IANA time zone name, e.g. Europe/Istanbul"}
 		]
 	}`)
-	checkJSON(t, get(t, router, path).Body.String(), before) // unchanged, updated_at included
+	checkJSON(t, get(t, router, path).Body.String(), before) // unchanged, version included
 }
 
 func TestPatchVenue_LocationEndsWithBothCoordinatesOrNeither(t *testing.T) {
@@ -762,7 +825,7 @@ func TestPatchVenue_LocationEndsWithBothCoordinatesOrNeither(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := venuesPath + "/" + insertVenue(t, pool, tt.stored).ID.String()
 
-			rec := patch(t, router, path, tt.patch)
+			rec := patch(t, router, path, `"1"`, tt.patch)
 
 			if tt.missing != "" {
 				checkProblem(t, rec, http.StatusBadRequest, `{
@@ -800,16 +863,19 @@ func TestPatchVenue_UnusableBodies(t *testing.T) {
 	}{
 		{"empty body", "", "the request body is empty"},
 		{"array instead of object", `[]`, "the request body must be a JSON object"},
-		{"unknown field", `{"capcity": 6000}`, `unknown field "capcity"`},
+		{"unknown field", `{"title": "Arena"}`, `unknown field "title"`},
 		{"unknown field in a nested object", `{"address": {"cty": "Ankara"}}`, `unknown field "cty"`},
-		{"number as string", `{"capacity": "6000"}`, "capacity must be a whole number"},
+		// The version goes in If-Match, the status through archive and restore.
+		{"version in the body", `{"version": 2}`, `unknown field "version"`},
+		{"status in the body", `{"status": "archived"}`, `unknown field "status"`},
+		{"number for a string", `{"name": 7}`, "name must be a string"},
 		{"wrong type in a nested field", `{"address": {"city": 7}}`, "address.city must be a string"},
 		{"number instead of an object", `{"location": 5}`, "location must be an object"},
 		{"string for a coordinate", `{"location": {"latitude": "north"}}`, "location.latitude must be a number"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := patch(t, router, path, tt.body)
+			rec := patch(t, router, path, `"1"`, tt.body)
 
 			want, err := json.Marshal(problem{
 				Type:     "about:blank",
@@ -826,25 +892,186 @@ func TestPatchVenue_UnusableBodies(t *testing.T) {
 	}
 }
 
-func TestPatchAndDeleteVenue_UnknownOrMalformedIDIs404(t *testing.T) {
+// changeRequest is one of the four requests that change a venue, sent for the version in
+// ifMatch to the venue at path.
+type changeRequest struct {
+	name   string
+	suffix string // added to the venue's path: "" or the action's "/archive", "/restore"
+	send   func(t *testing.T, router http.Handler, path, ifMatch string) *httptest.ResponseRecorder
+}
+
+var changeRequests = []changeRequest{
+	{"PATCH", "", func(t *testing.T, router http.Handler, path, ifMatch string) *httptest.ResponseRecorder {
+		return patch(t, router, path, ifMatch, `{"name": "Arena"}`)
+	}},
+	{"DELETE", "", func(t *testing.T, router http.Handler, path, ifMatch string) *httptest.ResponseRecorder {
+		return sendIfMatch(t, router, http.MethodDelete, path, ifMatch, "", "")
+	}},
+	{"archive", "/archive", func(t *testing.T, router http.Handler, path, ifMatch string) *httptest.ResponseRecorder {
+		return action(t, router, path, "archive", ifMatch)
+	}},
+	{"restore", "/restore", func(t *testing.T, router http.Handler, path, ifMatch string) *httptest.ResponseRecorder {
+		return action(t, router, path, "restore", ifMatch)
+	}},
+}
+
+func TestChangeVenue_WithoutIfMatchIs428AndChangesNothing(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+	before := get(t, router, path).Body.String()
+
+	for _, req := range changeRequests {
+		for name, ifMatch := range map[string]string{"no If-Match": "", "If-Match: *": "*"} {
+			t.Run(req.name+", "+name, func(t *testing.T) {
+				rec := req.send(t, router, path, ifMatch)
+
+				checkProblem(t, rec, http.StatusPreconditionRequired, `{
+					"type": "about:blank",
+					"title": "Precondition Required",
+					"status": 428,
+					"detail": "this request must have an If-Match header with the ETag of your last read, e.g. If-Match: \"3\"; GET the resource to get it",
+					"instance": "`+path+req.suffix+`"
+				}`)
+			})
+		}
+	}
+	checkJSON(t, get(t, router, path).Body.String(), before)
+}
+
+func TestChangeVenue_MalformedIfMatchIs400(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+
+	for name, ifMatch := range map[string]string{
+		"not quoted":       `1`,
+		"weak ETag":        `W/"1"`,
+		"two ETags":        `"1", "2"`,
+		"not a version":    `"abc"`,
+		"empty ETag":       `""`,
+		"negative version": `"-1"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := patch(t, router, path, ifMatch, `{"name": "Arena"}`)
+
+			checkProblem(t, rec, http.StatusBadRequest, `{
+				"type": "about:blank",
+				"title": "Bad Request",
+				"status": 400,
+				"detail": "the If-Match header must be one ETag exactly as this API sent it, e.g. \"3\"",
+				"instance": "`+path+`"
+			}`)
+		})
+	}
+}
+
+// An admin who read version 1 can't change, archive or delete the venue after someone else
+// changed it to version 2: the answer is 412, and nothing changes.
+func TestChangeVenue_StaleIfMatchIs412AndChangesNothing(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+	if rec := patch(t, router, path, `"1"`, `{"name": "Arena Istanbul"}`); rec.Code != http.StatusOK {
+		t.Fatalf("first PATCH: status %d, body %s", rec.Code, rec.Body)
+	}
+	before := get(t, router, path).Body.String() // version 2
+
+	for _, req := range changeRequests {
+		// A version that was never issued, even one too large for any number type, is stale too.
+		for _, ifMatch := range []string{`"1"`, `"3"`, `"99999999999999999999"`} {
+			t.Run(req.name+" "+ifMatch, func(t *testing.T) {
+				rec := req.send(t, router, path, ifMatch)
+
+				checkProblem(t, rec, http.StatusPreconditionFailed, `{
+					"type": "about:blank",
+					"title": "Precondition Failed",
+					"status": 412,
+					"detail": "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match",
+					"instance": "`+path+req.suffix+`"
+				}`)
+			})
+		}
+	}
+	checkJSON(t, get(t, router, path).Body.String(), before)
+}
+
+func TestArchiveAndRestoreVenue(t *testing.T) {
+	router, pool, _ := newVenueRouter(t)
+	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+
+	// statusOf reads the status and version from a response body.
+	statusOf := func(rec *httptest.ResponseRecorder) (string, int) {
+		t.Helper()
+		var body struct {
+			Status  string `json:"status"`
+			Version int    `json:"version"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		return body.Status, body.Version
+	}
+
+	archived := action(t, router, path, "archive", `"1"`)
+	if archived.Code != http.StatusOK {
+		t.Fatalf("archive: status %d, body %s", archived.Code, archived.Body)
+	}
+	if status, version := statusOf(archived); status != "archived" || version != 2 {
+		t.Errorf("after archive: status %q, version %d; want archived, 2", status, version)
+	}
+	checkETag(t, archived, `"2"`)
+	checkJSON(t, get(t, router, path).Body.String(), archived.Body.String()) // stored as answered
+
+	// An archived venue is closed to changes, and archiving it again is a conflict too.
+	checkProblem(t, patch(t, router, path, `"2"`, `{"name": "Arena"}`), http.StatusConflict, `{
+		"type": "about:blank",
+		"title": "Conflict",
+		"status": 409,
+		"detail": "venue is archived: restore it first",
+		"instance": "`+path+`"
+	}`)
+	checkProblem(t, action(t, router, path, "archive", `"2"`), http.StatusConflict, `{
+		"type": "about:blank",
+		"title": "Conflict",
+		"status": 409,
+		"detail": "venue is archived: restore it first",
+		"instance": "`+path+`/archive"
+	}`)
+
+	restored := action(t, router, path, "restore", `"2"`)
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restore: status %d, body %s", restored.Code, restored.Body)
+	}
+	if status, version := statusOf(restored); status != "active" || version != 3 {
+		t.Errorf("after restore: status %q, version %d; want active, 3", status, version)
+	}
+	checkETag(t, restored, `"3"`)
+
+	checkProblem(t, action(t, router, path, "restore", `"3"`), http.StatusConflict, `{
+		"type": "about:blank",
+		"title": "Conflict",
+		"status": 409,
+		"detail": "venue is not archived",
+		"instance": "`+path+`/restore"
+	}`)
+}
+
+func TestChangeVenue_UnknownOrMalformedIDIs404(t *testing.T) {
 	router, _, _ := newVenueRouter(t)
 
 	for name, id := range map[string]string{
 		"no venue has this id": uuid.New().String(),
 		"not a UUID":           "not-a-uuid",
 	} {
-		for _, method := range []string{http.MethodPatch, http.MethodDelete} {
-			t.Run(method+" "+name, func(t *testing.T) {
+		for _, req := range changeRequests {
+			t.Run(req.name+" "+name, func(t *testing.T) {
 				path := venuesPath + "/" + id
-
-				rec := send(t, router, method, path, mergePatchContentType, `{"capacity": 6000}`)
+				rec := req.send(t, router, path, `"1"`)
 
 				checkProblem(t, rec, http.StatusNotFound, `{
 					"type": "about:blank",
 					"title": "Not Found",
 					"status": 404,
 					"detail": "venue not found",
-					"instance": "`+path+`"
+					"instance": "`+path+req.suffix+`"
 				}`)
 			})
 		}
@@ -853,41 +1080,48 @@ func TestPatchAndDeleteVenue_UnknownOrMalformedIDIs404(t *testing.T) {
 
 func TestDeleteVenue_Returns204AndTheVenueIsGone(t *testing.T) {
 	router, pool, _ := newVenueRouter(t)
-	path := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+	active := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+	archived := venuesPath + "/" + insertVenue(t, pool, fullVenueParams()).ID.String()
+	if rec := action(t, router, archived, "archive", `"1"`); rec.Code != http.StatusOK {
+		t.Fatalf("archive: status %d, body %s", rec.Code, rec.Body)
+	}
 
-	rec := send(t, router, http.MethodDelete, path, "", "")
+	for path, ifMatch := range map[string]string{active: `"1"`, archived: `"2"`} {
+		rec := sendIfMatch(t, router, http.MethodDelete, path, ifMatch, "", "")
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status: got %d, want %d; body %s", rec.Code, http.StatusNoContent, rec.Body)
-	}
-	if rec.Body.Len() != 0 {
-		t.Errorf("body: got %q, want none", rec.Body)
-	}
-	if got := get(t, router, path); got.Code != http.StatusNotFound {
-		t.Errorf("GET after DELETE: status %d, want 404", got.Code)
-	}
-	if again := send(t, router, http.MethodDelete, path, "", ""); again.Code != http.StatusNotFound {
-		t.Errorf("second DELETE: status %d, want 404", again.Code)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status: got %d, want %d; body %s", rec.Code, http.StatusNoContent, rec.Body)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("body: got %q, want none", rec.Body)
+		}
+		if got := get(t, router, path); got.Code != http.StatusNotFound {
+			t.Errorf("GET after DELETE: status %d, want 404", got.Code)
+		}
+		again := sendIfMatch(t, router, http.MethodDelete, path, ifMatch, "", "")
+		if again.Code != http.StatusNotFound {
+			t.Errorf("second DELETE: status %d, want 404", again.Code)
+		}
 	}
 }
 
-func TestPatchAndDeleteVenue_DatabaseFailureIs500WithoutDetails(t *testing.T) {
+func TestChangeVenue_DatabaseFailureIs500WithoutDetails(t *testing.T) {
 	router, pool, logs := newVenueRouter(t)
 	pool.Close() // every query now fails; Close may be called again by the cleanup
 	path := venuesPath + "/" + uuid.New().String()
 
-	for _, method := range []string{http.MethodPatch, http.MethodDelete} {
-		rec := send(t, router, method, path, mergePatchContentType, `{"capacity": 6000}`)
+	for _, req := range changeRequests {
+		rec := req.send(t, router, path, `"1"`)
 
 		checkProblem(t, rec, http.StatusInternalServerError, `{
 			"type": "about:blank",
 			"title": "Internal Server Error",
 			"status": 500,
-			"instance": "`+path+`"
+			"instance": "`+path+req.suffix+`"
 		}`)
 	}
-	// PATCH fails when it starts its transaction, DELETE in its query.
-	for _, cause := range []string{"begin transaction", "delete venue"} {
+	// PATCH fails when it starts its transaction; the others in their query.
+	for _, cause := range []string{"begin transaction", "delete venue", "set venue"} {
 		if !strings.Contains(logs.String(), cause) {
 			t.Errorf("the log doesn't contain %q:\n%s", cause, logs.String())
 		}

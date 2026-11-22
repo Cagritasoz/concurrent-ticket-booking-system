@@ -23,7 +23,8 @@ type Venue struct {
 	Latitude     *float64
 	Longitude    *float64
 	Timezone     string
-	Capacity     *int32
+	Status       string
+	Version      int32
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

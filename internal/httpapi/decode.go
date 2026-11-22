@@ -108,7 +108,7 @@ func decodeStrict(c *gin.Context, body []byte, dst any) bool {
 
 // describeDecodeError turns an error from json.Decoder.Decode into a status and a detail for the
 // client. encoding/json's own messages name Go types (e.g. "Go struct field
-// venueRequest.capacity of type int"), which are our internals, so the details are written here
+// venueRequest.name of type string"), which are our internals, so the details are written here
 // in terms of the JSON.
 func describeDecodeError(err error) (int, string) {
 	var (

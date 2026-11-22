@@ -8,12 +8,12 @@ import (
 
 // patchField is one field of a JSON Merge Patch (RFC 7396) body. A field there has three states:
 //
-//	{}                     left out: keep the stored value
-//	{"capacity": null}     null: clear it
-//	{"capacity": 6000}     a value: set it
+//	{}                         left out: keep the stored value
+//	{"description": null}      null: clear it
+//	{"description": "Gate B"}  a value: set it
 //
-// A pointer has only two (nil and a value), so with *int a missing capacity and a null one would
-// both be nil. patchField records whether the field was in the body at all.
+// A pointer has only two (nil and a value), so with *string a missing description and a null one
+// would both be nil. patchField records whether the field was in the body at all.
 type patchField[T any] struct {
 	Set   bool // the field was in the body, as a value or as null
 	Null  bool // its value was null
@@ -47,7 +47,6 @@ type venuePatch struct {
 	Address     patchField[addressPatch]  `json:"address"`
 	Location    patchField[locationPatch] `json:"location"`
 	TimeZone    patchField[string]        `json:"time_zone"`
-	Capacity    patchField[int]           `json:"capacity"`
 }
 
 type addressPatch struct {
@@ -87,7 +86,6 @@ func (p venuePatch) apply(in *event.VenueInput) []event.FieldError {
 	}
 
 	setRequired(p.TimeZone, &in.TimeZone)
-	setOptional(p.Capacity, &in.Capacity)
 
 	if p.Location.Null {
 		in.Location = nil

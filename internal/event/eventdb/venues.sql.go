@@ -15,13 +15,13 @@ const createVenue = `-- name: CreateVenue :one
 INSERT INTO venues (
     name, description,
     address_line1, address_line2, city, region, postal_code, country_code,
-    latitude, longitude, timezone, capacity
+    latitude, longitude, timezone
 ) VALUES (
     $1, $2,
     $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12
+    $9, $10, $11
 )
-RETURNING id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, capacity, created_at, updated_at
+RETURNING id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at
 `
 
 type CreateVenueParams struct {
@@ -36,10 +36,10 @@ type CreateVenueParams struct {
 	Latitude     *float64
 	Longitude    *float64
 	Timezone     string
-	Capacity     *int32
 }
 
-// CreateVenue inserts a venue and returns it. Postgres fills in id, created_at and updated_at.
+// CreateVenue inserts a venue and returns it. Postgres fills in id, status (active), version (1),
+// created_at and updated_at.
 func (q *Queries) CreateVenue(ctx context.Context, arg CreateVenueParams) (Venue, error) {
 	row := q.db.QueryRow(ctx, createVenue,
 		arg.Name,
@@ -53,7 +53,6 @@ func (q *Queries) CreateVenue(ctx context.Context, arg CreateVenueParams) (Venue
 		arg.Latitude,
 		arg.Longitude,
 		arg.Timezone,
-		arg.Capacity,
 	)
 	var i Venue
 	err := row.Scan(
@@ -69,7 +68,8 @@ func (q *Queries) CreateVenue(ctx context.Context, arg CreateVenueParams) (Venue
 		&i.Latitude,
 		&i.Longitude,
 		&i.Timezone,
-		&i.Capacity,
+		&i.Status,
+		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -78,12 +78,20 @@ func (q *Queries) CreateVenue(ctx context.Context, arg CreateVenueParams) (Venue
 
 const deleteVenue = `-- name: DeleteVenue :execrows
 DELETE FROM venues
-WHERE id = $1
+WHERE id = $1 AND version = $2
 `
 
-// DeleteVenue returns the number of deleted rows: 0 means no venue had this id.
-func (q *Queries) DeleteVenue(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteVenue, id)
+type DeleteVenueParams struct {
+	ID      uuid.UUID
+	Version int32
+}
+
+// DeleteVenue deletes the venue if it still has the expected version and returns the number of
+// deleted rows: 0 means no venue has this id or its version is different. Its halls, their
+// layouts and sections are deleted with it (ON DELETE CASCADE). Once events exist (M1 step 8),
+// a venue they use can't be deleted (a foreign key error); archive it instead.
+func (q *Queries) DeleteVenue(ctx context.Context, arg DeleteVenueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteVenue, arg.ID, arg.Version)
 	if err != nil {
 		return 0, err
 	}
@@ -91,11 +99,11 @@ func (q *Queries) DeleteVenue(ctx context.Context, id uuid.UUID) (int64, error) 
 }
 
 const getVenue = `-- name: GetVenue :one
-SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, capacity, created_at, updated_at FROM venues
+SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at FROM venues
 WHERE id = $1
 `
 
-// GetVenue returns pgx.ErrNoRows if no venue has this id.
+// GetVenue returns pgx.ErrNoRows if no venue has this id. It returns archived venues too.
 func (q *Queries) GetVenue(ctx context.Context, id uuid.UUID) (Venue, error) {
 	row := q.db.QueryRow(ctx, getVenue, id)
 	var i Venue
@@ -112,7 +120,8 @@ func (q *Queries) GetVenue(ctx context.Context, id uuid.UUID) (Venue, error) {
 		&i.Latitude,
 		&i.Longitude,
 		&i.Timezone,
-		&i.Capacity,
+		&i.Status,
+		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -120,7 +129,7 @@ func (q *Queries) GetVenue(ctx context.Context, id uuid.UUID) (Venue, error) {
 }
 
 const getVenueForUpdate = `-- name: GetVenueForUpdate :one
-SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, capacity, created_at, updated_at FROM venues
+SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at FROM venues
 WHERE id = $1
 FOR UPDATE
 `
@@ -145,7 +154,8 @@ func (q *Queries) GetVenueForUpdate(ctx context.Context, id uuid.UUID) (Venue, e
 		&i.Latitude,
 		&i.Longitude,
 		&i.Timezone,
-		&i.Capacity,
+		&i.Status,
+		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -153,24 +163,32 @@ func (q *Queries) GetVenueForUpdate(ctx context.Context, id uuid.UUID) (Venue, e
 }
 
 const listVenues = `-- name: ListVenues :many
-SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, capacity, created_at, updated_at FROM venues
-WHERE (name, id) > ($1::text, $2::uuid)
+SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at FROM venues
+WHERE status = $1
+  AND (name, id) > ($2::text, $3::uuid)
 ORDER BY name, id
-LIMIT $3
+LIMIT $4
 `
 
 type ListVenuesParams struct {
+	Status    string
 	AfterName string
 	AfterID   uuid.UUID
 	PageSize  int32
 }
 
-// ListVenues returns one page of venues sorted by name, with id deciding between equal names.
-// It is keyset pagination: pass the name and id of the last venue of the previous page, or an
-// empty name and the zero UUID for the first page. Unlike OFFSET, a page costs the same however
-// far in it is, and venues added meanwhile don't shift the pages. The (name, id) index serves it.
+// ListVenues returns one page of the venues with this status, sorted by name, with id deciding
+// between equal names. It is keyset pagination: pass the name and id of the last venue of the
+// previous page, or an empty name and the zero UUID for the first page. Unlike OFFSET, a page
+// costs the same however far in it is, and venues added meanwhile don't shift the pages. The
+// (status, name, id) index serves it.
 func (q *Queries) ListVenues(ctx context.Context, arg ListVenuesParams) ([]Venue, error) {
-	rows, err := q.db.Query(ctx, listVenues, arg.AfterName, arg.AfterID, arg.PageSize)
+	rows, err := q.db.Query(ctx, listVenues,
+		arg.Status,
+		arg.AfterName,
+		arg.AfterID,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +209,8 @@ func (q *Queries) ListVenues(ctx context.Context, arg ListVenuesParams) ([]Venue
 			&i.Latitude,
 			&i.Longitude,
 			&i.Timezone,
-			&i.Capacity,
+			&i.Status,
+			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -205,59 +224,33 @@ func (q *Queries) ListVenues(ctx context.Context, arg ListVenuesParams) ([]Venue
 	return items, nil
 }
 
-const updateVenue = `-- name: UpdateVenue :one
+const setVenueStatus = `-- name: SetVenueStatus :one
 UPDATE venues SET
-    name = $1,
-    description = $2,
-    address_line1 = $3,
-    address_line2 = $4,
-    city = $5,
-    region = $6,
-    postal_code = $7,
-    country_code = $8,
-    latitude = $9,
-    longitude = $10,
-    timezone = $11,
-    capacity = $12,
+    status = $1,
+    version = version + 1,
     updated_at = now()
-WHERE id = $13
-RETURNING id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, capacity, created_at, updated_at
+WHERE id = $2 AND version = $3 AND status = $4
+RETURNING id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at
 `
 
-type UpdateVenueParams struct {
-	Name         string
-	Description  *string
-	AddressLine1 string
-	AddressLine2 *string
-	City         string
-	Region       *string
-	PostalCode   *string
-	CountryCode  string
-	Latitude     *float64
-	Longitude    *float64
-	Timezone     string
-	Capacity     *int32
-	ID           uuid.UUID
+type SetVenueStatusParams struct {
+	ToStatus   string
+	ID         uuid.UUID
+	Version    int32
+	FromStatus string
 }
 
-// UpdateVenue replaces every changeable column and returns pgx.ErrNoRows if no venue has this id.
-// To change only some, read the venue with GetVenueForUpdate in the same transaction, change
-// those fields and write it all back.
-func (q *Queries) UpdateVenue(ctx context.Context, arg UpdateVenueParams) (Venue, error) {
-	row := q.db.QueryRow(ctx, updateVenue,
-		arg.Name,
-		arg.Description,
-		arg.AddressLine1,
-		arg.AddressLine2,
-		arg.City,
-		arg.Region,
-		arg.PostalCode,
-		arg.CountryCode,
-		arg.Latitude,
-		arg.Longitude,
-		arg.Timezone,
-		arg.Capacity,
+// SetVenueStatus moves a venue from one status to another (archive: active → archived, restore:
+// archived → active) and adds 1 to its version, in one statement: it changes the row only if
+// the venue still has the expected version and the from status (compare and set), so two
+// admins can't both archive or restore from the same view. pgx.ErrNoRows means no row matched;
+// read the venue to find out why.
+func (q *Queries) SetVenueStatus(ctx context.Context, arg SetVenueStatusParams) (Venue, error) {
+	row := q.db.QueryRow(ctx, setVenueStatus,
+		arg.ToStatus,
 		arg.ID,
+		arg.Version,
+		arg.FromStatus,
 	)
 	var i Venue
 	err := row.Scan(
@@ -273,7 +266,85 @@ func (q *Queries) UpdateVenue(ctx context.Context, arg UpdateVenueParams) (Venue
 		&i.Latitude,
 		&i.Longitude,
 		&i.Timezone,
-		&i.Capacity,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateVenue = `-- name: UpdateVenue :one
+UPDATE venues SET
+    name = $1,
+    description = $2,
+    address_line1 = $3,
+    address_line2 = $4,
+    city = $5,
+    region = $6,
+    postal_code = $7,
+    country_code = $8,
+    latitude = $9,
+    longitude = $10,
+    timezone = $11,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $12 AND version = $13 AND status = 'active'
+RETURNING id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at
+`
+
+type UpdateVenueParams struct {
+	Name         string
+	Description  *string
+	AddressLine1 string
+	AddressLine2 *string
+	City         string
+	Region       *string
+	PostalCode   *string
+	CountryCode  string
+	Latitude     *float64
+	Longitude    *float64
+	Timezone     string
+	ID           uuid.UUID
+	Version      int32
+}
+
+// UpdateVenue replaces every changeable column of an active venue and adds 1 to its version, if
+// the venue still has the version the change was based on (compare and set). pgx.ErrNoRows
+// means no row matched: no venue has this id, it is archived, or its version is different. Run
+// it after GetVenueForUpdate in the same transaction, which tells those cases apart.
+func (q *Queries) UpdateVenue(ctx context.Context, arg UpdateVenueParams) (Venue, error) {
+	row := q.db.QueryRow(ctx, updateVenue,
+		arg.Name,
+		arg.Description,
+		arg.AddressLine1,
+		arg.AddressLine2,
+		arg.City,
+		arg.Region,
+		arg.PostalCode,
+		arg.CountryCode,
+		arg.Latitude,
+		arg.Longitude,
+		arg.Timezone,
+		arg.ID,
+		arg.Version,
+	)
+	var i Venue
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.City,
+		&i.Region,
+		&i.PostalCode,
+		&i.CountryCode,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Timezone,
+		&i.Status,
+		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

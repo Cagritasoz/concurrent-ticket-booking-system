@@ -60,6 +60,8 @@ func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger, venue
 	admin.GET("/venues/:id", venueRoutes.get)
 	admin.PATCH("/venues/:id", venueRoutes.update)
 	admin.DELETE("/venues/:id", venueRoutes.delete)
+	admin.POST("/venues/:id/archive", venueRoutes.archive)
+	admin.POST("/venues/:id/restore", venueRoutes.restore)
 
 	return router
 }

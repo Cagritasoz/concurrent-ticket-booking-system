@@ -1,5 +1,5 @@
--- A venue is a place where events happen: a hall, an arena, a club, a theatre.
--- Its layouts (seated and standing sections) are separate tables, added in M1 step 6.
+-- A venue is a building where events happen: an arena, a club, a theatre, a cinema. Its rooms
+-- (halls), their setups (layouts) and sections are the tables of migration 2.
 --
 -- Optional columns allow NULL but reject empty or blank text: a CHECK passes when its expression is
 -- NULL, so the same check works for required columns (with NOT NULL) and optional ones (without).
@@ -28,8 +28,18 @@ CREATE TABLE venues (
     -- time. Postgres can't easily check that the name exists; the Go code does (M1 step 5).
     timezone      text         NOT NULL CHECK (length(btrim(timezone)) BETWEEN 1 AND 64),
 
-    -- Maximum occupancy, if known. Publishing an event checks its tickets against it (M1 step 10).
-    capacity      integer               CHECK (capacity > 0),
+    -- There is no capacity here: each hall has its own (migration 2), and a venue with one room
+    -- has one hall.
+
+    -- active: in use. archived: kept for history (past events point at it) but hidden from lists
+    -- and closed to changes and new halls; it can be restored. A venue nothing ever used can be
+    -- deleted instead. Changed only by the archive and restore queries, which check the current
+    -- status in their WHERE (compare and set).
+    status        text         NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    -- Optimistic locking, like JPA's @Version: 1 for a new venue, +1 on every change. The API
+    -- sends it as the ETag, and a change must name the version it was based on (If-Match), so
+    -- an admin can't overwrite a change they haven't seen.
+    version       integer      NOT NULL DEFAULT 1 CHECK (version > 0),
 
     created_at    timestamptz  NOT NULL DEFAULT now(),
     -- Set by the update queries themselves; there is no trigger.
@@ -37,3 +47,8 @@ CREATE TABLE venues (
 
     CONSTRAINT venues_coordinates_together CHECK ((latitude IS NULL) = (longitude IS NULL))
 );
+
+-- The admin venue list shows one status at a time, sorted by name and paged with a cursor
+-- (ListVenues). This index lets Postgres read one page straight from the index instead of
+-- sorting the whole table. id makes the order unique when two venues have the same name.
+CREATE INDEX venues_status_name_id_idx ON venues (status, name, id);

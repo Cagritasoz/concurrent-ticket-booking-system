@@ -50,6 +50,7 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Testing | `testing` package, race detector, Testcontainers (Postgres); later fuzzing, k6 load tests | partly in use |
 | Local infra | Docker Compose | in use (Postgres; Redis for the examples) |
 | CI | GitHub Actions | in use |
+| Frontend | TypeScript + React (admin UI, then customer UI) | planned (after M2) |
 | Gateway | Traefik, only if a real need appears | not planned |
 
 ## Requirements
@@ -78,8 +79,8 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 
 ### Auth
 - Keycloak OIDC. JWT signature, issuer, expiry, audience and permissions are validated.
-- Resource-level authorization in the application, with separate customer and event-admin
-  permissions.
+- Resource-level authorization in the application, with three roles: venue managers (their own
+  venues' maps), organizers (their own events, in venues that granted them access) and customers.
 
 ### Engineering
 - Docker Compose for local infrastructure; GitHub Actions for format, lint, unit tests,

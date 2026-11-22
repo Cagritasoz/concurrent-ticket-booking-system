@@ -31,7 +31,6 @@ func TestClean_AcceptsValidInput(t *testing.T) {
 	in.Address.Region = new("Sariyer")
 	in.Address.PostalCode = new("34396")
 	in.Location = &Location{Latitude: -90, Longitude: 180} // the limits themselves are allowed
-	in.Capacity = new(math.MaxInt32)
 
 	got, err := in.clean()
 	if err != nil {
@@ -103,8 +102,6 @@ func TestClean_RejectsBrokenRules(t *testing.T) {
 		{"missing time zone", func(in *VenueInput) { in.TimeZone = "" }, "time_zone", "IANA"},
 		{"unknown time zone", func(in *VenueInput) { in.TimeZone = "Mars/Olympus_Mons" }, "time_zone", "IANA"},
 		{"Local is not a time zone", func(in *VenueInput) { in.TimeZone = "Local" }, "time_zone", "IANA"},
-		{"zero capacity", func(in *VenueInput) { in.Capacity = new(0) }, "capacity", "between 1 and"},
-		{"capacity above int32", func(in *VenueInput) { in.Capacity = new(math.MaxInt32 + 1) }, "capacity", "between 1 and"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,7 +126,7 @@ func TestClean_RejectsBrokenRules(t *testing.T) {
 }
 
 func TestClean_ReportsEveryProblemAtOnce(t *testing.T) {
-	in := VenueInput{Capacity: new(-1)} // everything required is missing, and capacity is wrong
+	in := VenueInput{Location: &Location{Latitude: 91}} // everything required is missing, and the latitude is wrong
 
 	_, err := in.clean()
 
@@ -141,7 +138,7 @@ func TestClean_ReportsEveryProblemAtOnce(t *testing.T) {
 	for _, f := range invalid.Fields {
 		fields = append(fields, f.Field)
 	}
-	want := []string{"name", "address.line1", "address.city", "address.country_code", "time_zone", "capacity"}
+	want := []string{"name", "address.line1", "address.city", "address.country_code", "location.latitude", "time_zone"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Errorf("fields: got %v, want %v", fields, want)
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -50,7 +51,14 @@ func (h venueHandler) get(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toVenueResponse(venue))
+	writeVenue(c, http.StatusOK, venue)
+}
+
+// writeVenue sends one venue with its version as the ETag, which a later change sends back in
+// If-Match.
+func writeVenue(c *gin.Context, status int, venue event.Venue) {
+	setETag(c, venue.Version)
+	c.JSON(status, toVenueResponse(venue))
 }
 
 // create handles POST /api/v1/admin/venues. It answers 201 Created with the new venue and its
@@ -73,14 +81,22 @@ func (h venueHandler) create(c *gin.Context) {
 	}
 	// c.FullPath() is the route's path pattern, here "/api/v1/admin/venues".
 	c.Header("Location", c.FullPath()+"/"+venue.ID.String())
-	c.JSON(http.StatusCreated, toVenueResponse(venue))
+	writeVenue(c, http.StatusCreated, venue)
 }
 
-// list handles GET /api/v1/admin/venues?limit=20&cursor=..., one page of venues sorted by name.
-// Both query parameters are optional (like @RequestParam(required = false)): limit defaults to
+// list handles GET /api/v1/admin/venues?status=active&limit=20&cursor=..., one page of venues
+// sorted by name. Every query parameter is optional (like @RequestParam(required = false)):
+// status defaults to active (archived venues are listed only when asked for), limit to
 // event.DefaultVenuePageSize, and without a cursor the first page is returned. To get the next
-// page, the client sends the next_cursor of the previous response as cursor.
+// page, the client sends the next_cursor of the previous response as cursor, with the same status.
+//
+// A list has no ETag: each venue carries its version in the body instead, so a client can change
+// any of them with the version it was shown.
 func (h venueHandler) list(c *gin.Context) {
+	status := event.VenueActive
+	if s := c.Query("status"); s != "" {
+		status = event.VenueStatus(s) // the service checks it is one of the statuses
+	}
 	limit := event.DefaultVenuePageSize // 20 is the default
 	var after *event.VenueCursor
 	// Problems with the text of the parameters are found here; the limit's range is the
@@ -107,7 +123,7 @@ func (h venueHandler) list(c *gin.Context) {
 		return
 	}
 
-	page, err := h.service.List(c.Request.Context(), after, limit)
+	page, err := h.service.List(c.Request.Context(), status, after, limit)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -116,9 +132,14 @@ func (h venueHandler) list(c *gin.Context) {
 }
 
 // update handles PATCH /api/v1/admin/venues/:id: it changes only the fields in the body (JSON
-// Merge Patch, see venuePatch) and answers 200 with the venue as stored.
+// Merge Patch, see venuePatch) of the version named in If-Match, and answers 200 with the venue
+// as stored and its new ETag.
 func (h venueHandler) update(c *gin.Context) {
 	id, ok := venueID(c)
+	if !ok {
+		return
+	}
+	version, ok := ifMatchVersion(c)
 	if !ok {
 		return
 	}
@@ -142,7 +163,7 @@ func (h venueHandler) update(c *gin.Context) {
 
 	// The patch is applied inside the service's transaction, to the venue's current values: a
 	// function literal (a closure, like a Java lambda) that captures patch.
-	venue, err := h.service.Update(c.Request.Context(), id, func(in *event.VenueInput) error {
+	venue, err := h.service.Update(c.Request.Context(), id, version, func(in *event.VenueInput) error {
 		if problems := patch.apply(in); len(problems) > 0 {
 			return &event.ValidationError{Fields: problems}
 		}
@@ -152,23 +173,63 @@ func (h venueHandler) update(c *gin.Context) {
 		h.writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toVenueResponse(venue))
+	writeVenue(c, http.StatusOK, venue)
 }
 
-// delete handles DELETE /api/v1/admin/venues/:id and answers 204 No Content: success, and no
-// body. Deleting the same venue again is a 404.
+// archive handles POST /api/v1/admin/venues/:id/archive: the version named in If-Match becomes
+// archived, hidden from the default list and closed to changes. It answers 200 with the venue
+// and its new ETag. Archive and restore are actions, not field changes, so they are their own
+// endpoints (Google's API guide calls these custom methods) rather than "status" in a PATCH body.
+func (h venueHandler) archive(c *gin.Context) {
+	h.changeStatus(c, h.service.Archive)
+}
+
+// restore handles POST /api/v1/admin/venues/:id/restore, archive in reverse.
+func (h venueHandler) restore(c *gin.Context) {
+	h.changeStatus(c, h.service.Restore)
+}
+
+// changeStatus is the shared body of archive and restore; op is the service method to call (a
+// method value, like a Java method reference: service::archive).
+func (h venueHandler) changeStatus(c *gin.Context, op func(context.Context, uuid.UUID, int) (event.Venue, error)) {
+	id, ok := venueID(c)
+	if !ok {
+		return
+	}
+	version, ok := ifMatchVersion(c)
+	if !ok {
+		return
+	}
+	venue, err := op(c.Request.Context(), id, version)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	writeVenue(c, http.StatusOK, venue)
+}
+
+// delete handles DELETE /api/v1/admin/venues/:id of the version named in If-Match, and answers
+// 204 No Content: success, and no body. Deleting the same venue again is a 404. Archived venues
+// can be deleted too; once events exist (M1 step 8), a venue any event uses can only be archived.
 func (h venueHandler) delete(c *gin.Context) {
 	id, ok := venueID(c)
 	if !ok {
 		return
 	}
-	if err := h.service.Delete(c.Request.Context(), id); err != nil {
+	version, ok := ifMatchVersion(c)
+	if !ok {
+		return
+	}
+	if err := h.service.Delete(c.Request.Context(), id, version); err != nil {
 		h.writeError(c, err)
 		return
 	}
 	// Status only sets the code; Gin sends it when the handler returns, with nothing written.
 	c.Status(http.StatusNoContent)
 }
+
+// versionMismatchDetail is the 412's explanation, the same for every kind of object.
+const versionMismatchDetail = "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match"
 
 // writeError turns an error from the service into a response, like an @ExceptionHandler in a
 // @ControllerAdvice. Errors the module defines get their status; anything else is a 500 whose
@@ -180,6 +241,12 @@ func (h venueHandler) writeError(c *gin.Context, err error) {
 		writeValidationProblem(c, invalid.Fields)
 	case errors.Is(err, event.ErrVenueNotFound):
 		writeProblem(c, http.StatusNotFound, err.Error())
+	case errors.Is(err, event.ErrVersionMismatch):
+		writeProblem(c, http.StatusPreconditionFailed, versionMismatchDetail)
+	case errors.Is(err, event.ErrVenueArchived):
+		writeProblem(c, http.StatusConflict, "venue is archived: restore it first")
+	case errors.Is(err, event.ErrVenueNotArchived):
+		writeProblem(c, http.StatusConflict, err.Error())
 	default: // Handle unexpected errors.
 		h.logger.ErrorContext(c.Request.Context(), "request failed", "error", err)
 		writeProblem(c, http.StatusInternalServerError, "")
@@ -195,7 +262,6 @@ type venueRequest struct {
 	Address     addressJSON      `json:"address"`
 	Location    *locationRequest `json:"location"`
 	TimeZone    string           `json:"time_zone"`
-	Capacity    *int             `json:"capacity"`
 }
 
 // locationRequest has pointers so a missing latitude or longitude can be told apart from 0,
@@ -221,7 +287,6 @@ func (r venueRequest) toInput() (event.VenueInput, []event.FieldError) {
 			CountryCode: r.Address.CountryCode,
 		},
 		TimeZone: r.TimeZone,
-		Capacity: r.Capacity,
 	}
 	var problems []event.FieldError
 	if l := r.Location; l != nil {
@@ -248,9 +313,11 @@ type venueResponse struct {
 	Address     addressJSON       `json:"address"`
 	Location    *locationResponse `json:"location"`
 	TimeZone    string            `json:"time_zone"`
-	Capacity    *int              `json:"capacity"`
-	CreatedAt   time.Time         `json:"created_at"` // RFC 3339, e.g. "2026-11-20T09:30:00.123456Z"
-	UpdatedAt   time.Time         `json:"updated_at"`
+	Status      event.VenueStatus `json:"status"` // "active" or "archived"
+	// Version is also sent as the ETag header of single-venue responses; a list has only this.
+	Version   int       `json:"version"`
+	CreatedAt time.Time `json:"created_at"` // RFC 3339, e.g. "2026-11-20T09:30:00.123456Z"
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // addressJSON is the JSON form of an address, the same in requests and responses.
@@ -282,7 +349,8 @@ func toVenueResponse(v event.Venue) venueResponse {
 			CountryCode: v.Address.CountryCode,
 		},
 		TimeZone: v.TimeZone,
-		Capacity: v.Capacity,
+		Status:   v.Status,
+		Version:  v.Version,
 		// pgx returns times in the server machine's local time zone. UTC makes the output the
 		// same wherever the app runs.
 		CreatedAt: v.CreatedAt.UTC(),

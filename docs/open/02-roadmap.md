@@ -11,8 +11,10 @@
   Postgres with Testcontainers), step 4 (sqlc venue queries, `WithTx`, constraint error checks),
   steps 5a and 5b (the venue service and the first REST endpoints: create, read, list in keyset
   pages, update with JSON Merge Patch in a locked transaction, and delete, under
-  `/api/v1/admin/venues`, with validation in the service and Problem Details errors).
-- **Next:** M1 step 6, layouts and sections.
+  `/api/v1/admin/venues`, with validation in the service and Problem Details errors), step 5c
+  (venues get a lifecycle, archive and restore, and optimistic locking with `ETag` and a required
+  `If-Match`; their capacity moved to halls).
+- **Next:** M1 step 6a, the `halls`, `layouts` and `sections` tables.
 
 Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
 `main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
@@ -22,8 +24,9 @@ Each milestone is developed on its own branch named `milestone/{milestone name}`
 | M | Name | Scope | Proof it's done | Status |
 |---|---|---|---|---|
 | 0 | Foundation | Entry point, config, logging, HTTP server, health checks, graceful shutdown, tooling and CI (see steps below) | Handler tests, shutdown test, CI green | Done |
-| 1 | Postgres + Event | Postgres in Compose, golang-migrate, sqlc, a shared test harness for Postgres; venues with layouts (seated sections with seats, standing sections with a capacity), events, ticket tiers, tickets (seated and standing); admin CRUD; publish and cancel rules | Integration tests against real Postgres, domain unit tests | In progress |
-| 2 | Auth | Keycloak realm in Compose, OIDC middleware, `Principal`, customer and event-admin roles, ownership checks | Tests with a test key set: bad signature, issuer, audience, expiry, missing role, another user's resource; one Keycloak container test | Not started |
+| 1 | Postgres + Event | Postgres in Compose, golang-migrate, sqlc, a shared test harness for Postgres; venues with halls and layouts (seated sections with seats, standing sections with a capacity), events, ticket tiers, tickets (seated and standing); admin CRUD; publish and cancel rules | Integration tests against real Postgres, domain unit tests | In progress |
+| 2 | Auth | Keycloak realm in Compose, OIDC middleware, `Principal`, venue-manager, organizer and customer roles; organizations with memberships, venues owned by an operator organization, venue access grants for organizers, events owned by their organizer; ownership checks in the services | Tests with a test key set: bad signature, issuer, audience, expiry, missing role, another user's resource; one Keycloak container test | Not started |
+| F | Frontend | TypeScript + React, after M2 (it needs login): first the **admin UI** (venues down to seats, events, tiers, publishing), then the **customer UI** growing with M3 onward (browse, seat map, booking, payment). The owner describes how it should look; Claude writes it. Real-time seat updates (WebSockets considered) come with the customer UI | Component tests; the main flows tried in a browser against the running app | Not started |
 | 3 | Booking core | Bookings, the "one active booking per ticket" index, the booking state machine, seat selection (pick seats or a general-admission quantity), per-customer limits per tier, expiry sweeper, `POST /bookings`; the concurrent booking test ported to Postgres | Exactly one winner per ticket (including 1,000 concurrent users booking the same seat), expiry frees seats, multi-ticket bookings are all-or-nothing, deadlock-free ordering, parallel requests can't exceed a customer limit | Not started |
 | 4 | Idempotency | `Idempotency-Key` header, request hash, response replay | Concurrent duplicates, payload mismatch, rollback on crash, fuzzed request canonicalization | Not started |
 | 5 | Redis holds | Redis hold cache (`SET NX PX` + Lua compare-and-delete), timeouts, circuit breaker, fail-open to Postgres | Redis stopped, paused or flushed mid-test: still exactly one winner | Not started |
@@ -77,22 +80,24 @@ See [Application runtime](06-application-runtime.md) for how these pieces work t
 
 ## M1 Postgres + Event steps
 
-M1 gives the app a database and the admin side of the system: an admin describes a venue and its
-layouts, creates an event in one of those layouts with ticket tiers, and publishes it, which creates
-the tickets that M3 will sell. The first REST endpoints arrive in step 5b; steps 1–5a build what they
-stand on. Every step includes its tests.
+M1 gives the app a database and the admin side of the system: an admin describes a venue, its
+halls and their layouts, creates an event in one of those layouts with ticket tiers, and publishes
+it, which creates the tickets that M3 will sell. The first REST endpoints arrive in step 5b; steps
+1–5a build what they stand on. Every step includes its tests.
 
 The model aims to match real ticketing platforms:
 
 ```
-venue                        "Volkswagen Arena"
- └─ layout                   "Concert – standing floor", "Basketball", "Theatre setup"
-     └─ section              seated: "Block 101" → seats (row "A", seat "12")
+venue                        "Zorlu PSM" (the building)
+ └─ hall                     "Turkcell Stage", "Studio" (rooms; can host events at the same time)
+     └─ layout               "Concert – standing floor", "Theatre setup" (one at a time per hall)
+         └─ section          seated: "Block 101" → seats (row "A", seat "12")
                              standing: "Floor" → a capacity, no seats
 ```
 
-Every event uses one layout of its venue; a venue with only standing room has a layout with one
-standing section. Every ticket has a place: a seat, or a standing section.
+Every event uses one layout of a hall; a venue with one room has one hall, and a hall with only
+standing room has a layout with one standing section. Every ticket has a place: a seat, or a
+standing section.
 
 | Step | What | Spring Boot equivalent | Status |
 |---|---|---|---|
@@ -102,13 +107,17 @@ standing section. Every ticket has a place: a seat, or a standing section.
 | 4 | sqlc generates Go from the SQL in `internal/event/queries`; `WithTx` transaction helper; broken constraints recognised by name, for modules to map to their own errors; first venue queries, tested against real Postgres | Spring Data repositories + `TransactionTemplate` + exception translation | Done |
 | 5a | **Venue service** in `internal/event`: its own `Venue` type, the venue's errors (e.g. not found), validation of admin input reporting every problem at once, get / create / list (keyset pages) / update (in a transaction, row locked) / delete; tested against real Postgres | `@Service` + Bean Validation | Done |
 | 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | Done |
-| 6 | Layouts and sections: a venue's layouts; each layout's sections, either seated or standing with a capacity | Child entities + nested endpoints | Not started |
+| 5c | **Venue lifecycle and optimistic locking:** `status` (active / archived) with archive and restore as compare-and-set requests, the list filtered by status; `version` sent as the `ETag`, a required `If-Match` on every change (412 / 428); DELETE only with `If-Match`; the venue's capacity removed (halls have it) | `@Version` + `ETag` / `If-Match` + soft delete | Done |
+| 6a | **Schema:** the `halls` table (a venue's rooms), the `layouts` table (a hall's setups) and the `sections` table (each layout's sections, either seated or standing with a capacity), names unique per parent among what isn't archived, deleted with their parent; a status for halls and layouts, a version for all three | `@OneToMany(cascade = REMOVE)` child entities, written as a Flyway migration | Not started |
+| 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | Not started |
+| 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | Not started |
+| 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | Not started |
 | 7 | Seats: the seats of a seated section (row and seat labels), created in bulk by rows | Bulk insert + validation | Not started |
-| 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of its venue | Another `@RestController` + service | Not started |
+| 8 | Events: CRUD for draft events; an event is one dated occurrence in one layout of a hall | Another `@RestController` + service | Not started |
 | 9 | Ticket tiers: name, price (integer minor units + currency), description, and either a set of seats (whole sections or single seats) or a quantity in a standing section | Child entity + validation rules | Not started |
 | 10 | Publish: a pure Go status table, a conditional status update, capacity checks, and ticket generation (one row per seat or standing place) in one transaction | Enum state machine + `@Transactional` service method | Not started |
 | 11 | Cancel and edit rules: what can change after publishing, enforced with locks so inventory can't be removed underneath customers (invariant I14); layouts used by a published event are frozen and can be copied | Domain rules + pessimistic locking | Not started |
-| 12 | Close M1: API reference in `docs/open`, an end-to-end test (venue → layout → seats → event → tiers → publish → tickets exist), CI green | springdoc / REST docs + `@SpringBootTest` | Not started |
+| 12 | Close M1: API reference in `docs/open`, an end-to-end test (venue → hall → layout → seats → event → tiers → publish → tickets exist), CI green | springdoc / REST docs + `@SpringBootTest` | Not started |
 
 ### What M1 has delivered so far
 
@@ -136,7 +145,7 @@ standing section. Every ticket has a place: a seat, or a standing section.
   Postgres service remains for the migration targets).
 - **Step 4:** sqlc v1.31.1 (`sqlc.yaml`, `make generate`) turns `internal/event/queries/venues.sql`
   into `internal/event/eventdb`: create, get, get-and-lock (`FOR UPDATE`), a keyset-paginated list
-  by name (with an index from migration 2), update and delete. Standard Go types in the generated
+  by name (with an index, now in migration 1), update and delete. Standard Go types in the generated
   code (`uuid.UUID`, `time.Time`, pointers for `NULL`). `postgres.WithTx` commits or rolls back
   (also on a panic); `postgres.IsUniqueViolation`, `IsForeignKeyViolation` and `IsCheckViolation`
   recognise a broken constraint by name. Tests against real Postgres cover every query, paging
@@ -145,7 +154,7 @@ standing section. Every ticket has a place: a seat, or a standing section.
   were lost). CI checks the generated code with `sqlc diff`.
 - **Step 5a:** `event.VenueService` with `Get`, built on the generated queries
   (no repository layer of its own). It returns the module's own `event.Venue` (address grouped,
-  coordinates as one optional `Location`, capacity as `*int`), converted from the row in one
+  coordinates as one optional `Location`, capacity as `*int`, removed in step 5c), converted from the row in one
   place, so `httpapi` will never import `eventdb`. An unknown id is `event.ErrVenueNotFound`; any
   other database error is wrapped and passed on. Tests against real Postgres: every field read
   back, optional fields `nil`, unknown id, and a failing database that isn't reported as "not
@@ -178,6 +187,19 @@ standing section. Every ticket has a place: a seat, or a standing section.
   body is checked against the create body's shape first, for the same error messages, then
   applied in the service's transaction; 200 with the venue as stored. `DELETE` answers 204, or 404
   for an unknown id (also when deleting twice).
+- **Step 5c:** migration 1 now holds the whole venues table: `status` (`active` / `archived`,
+  default active), `version` (default 1) and the `(status, name, id)` list index; `capacity` is
+  gone (migrations are edited until M1 merges, see the decisions). `VenueService` takes the
+  version a change is based on: `Update` checks it inside its locked transaction, and the new
+  `Archive`, `Restore` and `Delete` are compare-and-set statements (`... WHERE id AND version AND
+  status`) that read the venue only when nothing matched, to say why: `ErrVenueNotFound`,
+  `ErrVersionMismatch` or `ErrVenueArchived` / `ErrVenueNotArchived`. `List` takes a status. The
+  API sends the version as `ETag` and in the JSON (`status`, `version`), adds `POST
+  /venues/{id}/archive` and `/restore` and `?status=archived`, and requires `If-Match` on PATCH,
+  DELETE, archive and restore: 412 for another version, 428 when missing or `*`, 400 when
+  malformed, 409 for a change to an archived venue. Tests: 20 concurrent changes from the same
+  version have exactly one winner; 20 clients that retry after a 412 lose no change; every
+  refusal names its reason and changes nothing.
 
 ### Planned M1 endpoints
 
@@ -185,9 +207,10 @@ Paths are under `/api/v1/admin`. They are a plan and can change when each step i
 
 | Step | Method and path | Action |
 |---|---|---|
-| 5b | `POST /venues`, `GET /venues`, `GET /venues/{id}`, `PATCH /venues/{id}`, `DELETE /venues/{id}` | Manage venues |
-| 6 | `POST /venues/{id}/layouts`, `GET /venues/{id}/layouts`, `GET /layouts/{id}`, `PATCH /layouts/{id}`, `DELETE /layouts/{id}` | Manage a venue's layouts |
-| 6 | `POST /layouts/{id}/sections`, `GET /layouts/{id}/sections`, `PATCH /sections/{id}`, `DELETE /sections/{id}` | Manage a layout's sections |
+| 5b, 5c | `POST /venues`, `GET /venues`, `GET /venues/{id}`, `PATCH /venues/{id}`, `POST /venues/{id}/archive`, `POST /venues/{id}/restore`, `DELETE /venues/{id}` | Manage venues |
+| 6b | `POST /venues/{id}/halls`, `GET /venues/{id}/halls`, `GET /halls/{id}`, `PATCH /halls/{id}`, `POST /halls/{id}/archive`, `POST /halls/{id}/restore`, `DELETE /halls/{id}` | Manage a venue's halls |
+| 6c | `POST /halls/{id}/layouts`, `GET /halls/{id}/layouts`, `GET /layouts/{id}`, `PATCH /layouts/{id}`, `POST /layouts/{id}/activate`, `POST /layouts/{id}/archive`, `POST /layouts/{id}/restore`, `DELETE /layouts/{id}` | Manage a hall's layouts |
+| 6d | `POST /layouts/{id}/sections`, `GET /layouts/{id}/sections`, `PATCH /sections/{id}`, `DELETE /sections/{id}` | Manage a layout's sections |
 | 7 | `POST /sections/{id}/seats`, `GET /sections/{id}/seats`, `PATCH /seats/{id}`, `DELETE /seats/{id}` | Manage a seated section's seats; `POST` creates whole rows at once |
 | 8 | `POST /events`, `GET /events`, `GET /events/{id}`, `PATCH /events/{id}`, `DELETE /events/{id}` | Manage events; only drafts can be deleted |
 | 9 | `POST /events/{id}/tiers`, `GET /events/{id}/tiers`, `PATCH /tiers/{id}`, `DELETE /tiers/{id}` | Manage an event's ticket tiers |
@@ -202,7 +225,7 @@ Paths are under `/api/v1/admin`. They are a plan and can change when each step i
 - **Customer endpoints:** booking comes in M3, and search in M8. Customer read endpoints for
   events and availability are added in M3, when availability exists.
 - **Refunds (M7):** cancelling an event in M1 only changes its status, because no bookings exist yet.
-- **Drawing seat maps:** seats have labels but no screen coordinates, because there is no frontend.
-  Coordinates can be added as columns if one is built.
+- **Drawing seat maps:** seats get labels but no screen coordinates, because the frontend comes
+  after M2. Coordinates can be added as columns when it draws maps.
 - **Venue images, slugs and websites:** images need file storage, and slugs are for public pages,
   which arrive with the customer side.

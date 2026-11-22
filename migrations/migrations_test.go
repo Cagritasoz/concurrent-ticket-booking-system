@@ -191,7 +191,8 @@ func TestVenues_TableRules(t *testing.T) {
 			with("postal_code", "34340").
 			with("latitude", 41.066740).
 			with("longitude", 29.016090).
-			with("capacity", 2200), ""},
+			with("status", "archived").
+			with("version", 7), ""},
 		{"missing name", validVenue().with("name", nil), notNullViolation},
 		{"blank name", validVenue().with("name", "   "), checkViolation},
 		{"name longer than 200", validVenue().with("name", strings.Repeat("a", 201)), checkViolation},
@@ -205,7 +206,9 @@ func TestVenues_TableRules(t *testing.T) {
 		{"latitude without longitude", validVenue().with("latitude", 41.0), checkViolation},
 		{"latitude above 90", validVenue().with("latitude", 90.5).with("longitude", 29.0), checkViolation},
 		{"longitude below -180", validVenue().with("latitude", 41.0).with("longitude", -180.5), checkViolation},
-		{"zero capacity", validVenue().with("capacity", 0), checkViolation},
+		{"unknown status", validVenue().with("status", "closed"), checkViolation},
+		{"missing status", validVenue().with("status", nil), notNullViolation},
+		{"zero version", validVenue().with("version", 0), checkViolation},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,21 +227,26 @@ func TestVenues_TableRules(t *testing.T) {
 	}
 }
 
-func TestVenues_DefaultsFillIDAndTimestamps(t *testing.T) {
+func TestVenues_DefaultsFillIDStatusVersionAndTimestamps(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 	if err := insertVenue(t.Context(), conn, validVenue()); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	var id string
+	var id, status string
+	var version int
 	var sameTimes bool
 	err := conn.QueryRow(t.Context(),
-		`SELECT id::text, created_at = updated_at FROM venues`).Scan(&id, &sameTimes)
+		`SELECT id::text, status, version, created_at = updated_at FROM venues`,
+	).Scan(&id, &status, &version, &sameTimes)
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(id) {
 		t.Errorf("id %q is not a random (version 4) UUID", id)
+	}
+	if status != "active" || version != 1 {
+		t.Errorf("status %q, version %d; want active, 1", status, version)
 	}
 	if !sameTimes {
 		t.Error("created_at and updated_at should be equal for a new row")

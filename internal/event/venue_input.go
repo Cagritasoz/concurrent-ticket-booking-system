@@ -2,22 +2,21 @@ package event
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
-// VenueInput is every field of Venue an admin can set, so all but the ones Postgres fills in (ID,
-// CreatedAt, UpdatedAt). Create takes one; Update hands the venue's current values to its caller
-// as one to change. Both check it with clean.
+// VenueInput is every field of Venue an admin can edit: all but the ones Postgres fills in (ID,
+// CreatedAt, UpdatedAt) and the ones that change only through their own operations (Status:
+// archive and restore; Version: every change). Create takes one; Update hands the venue's
+// current values to its caller as one to change. Both check it with clean.
 type VenueInput struct {
 	Name        string
 	Description *string
 	Address     Address
 	Location    *Location
 	TimeZone    string
-	Capacity    *int
 }
 
 // input returns the venue's changeable values, the starting point of an update. The pointers are
@@ -30,7 +29,6 @@ func (v Venue) input() VenueInput {
 		Address:     v.Address,
 		Location:    v.Location,
 		TimeZone:    v.TimeZone,
-		Capacity:    v.Capacity,
 	}
 }
 
@@ -114,11 +112,6 @@ func (in VenueInput) clean() (VenueInput, error) {
 	in.TimeZone = strings.TrimSpace(in.TimeZone)
 	if !isTimeZone(in.TimeZone) {
 		problems.add("time_zone", "must be an IANA time zone name, e.g. Europe/Istanbul")
-	}
-
-	// The column is a Postgres integer (int32), so the largest int32 is the upper limit.
-	if c := in.Capacity; c != nil && (*c < 1 || *c > math.MaxInt32) {
-		problems.add("capacity", fmt.Sprintf("must be between 1 and %d", math.MaxInt32))
 	}
 
 	if len(problems) > 0 {

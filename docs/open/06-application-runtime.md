@@ -114,20 +114,22 @@ Unknown routes get Gin's default `404 page not found`.
 |---|---|---|---|
 | GET | `/healthz` | `200 {"status":"ok"}` | **Liveness:** the process is alive. Always 200; it never checks dependencies, because restarting the app doesn't fix a database outage. |
 | GET | `/readyz` | `200 {"status":"ready"}` or `503 {"status":"not ready"}` | **Readiness:** the app should receive traffic. Ready once the listener is open; not ready as soon as shutdown starts, or while Postgres doesn't answer a ping within 2 seconds. The reason is logged as `readiness check failed`, never sent to the client. It recovers by itself when Postgres returns. |
-| POST | `/api/v1/admin/venues` | `201` with the venue and a `Location` header, or `400` / `413` / `415` | **Create a venue.** Admin API, no authentication until M2. |
-| GET | `/api/v1/admin/venues?limit=20&cursor=...` | `200` with one page of venues, or `400` (bad `limit` or `cursor`) | **List venues** sorted by name, page by page. Admin API, no authentication until M2. |
-| GET | `/api/v1/admin/venues/{id}` | `200` with the venue, or `404` (no venue has this id, or the id isn't a UUID) | **Read a venue.** Admin API, no authentication until M2. |
-| PATCH | `/api/v1/admin/venues/{id}` | `200` with the changed venue, or `400` / `404` / `413` / `415` | **Change some of a venue's fields** (JSON Merge Patch). Admin API, no authentication until M2. |
-| DELETE | `/api/v1/admin/venues/{id}` | `204` with no body, or `404` | **Delete a venue.** Admin API, no authentication until M2. |
+| POST | `/api/v1/admin/venues` | `201` with the venue, its `ETag` and a `Location` header, or `400` / `413` / `415` | **Create a venue.** |
+| GET | `/api/v1/admin/venues?status=active&limit=20&cursor=...` | `200` with one page of venues, or `400` (bad `status`, `limit` or `cursor`) | **List venues** of one status, sorted by name, page by page. |
+| GET | `/api/v1/admin/venues/{id}` | `200` with the venue and its `ETag`, or `404` (no venue has this id, or the id isn't a UUID) | **Read a venue**, archived ones too. |
+| PATCH | `/api/v1/admin/venues/{id}` | `200` with the changed venue and its new `ETag`, or `400` / `404` / `409` / `412` / `413` / `415` / `428` | **Change some of a venue's fields** (JSON Merge Patch). Needs `If-Match`. |
+| POST | `/api/v1/admin/venues/{id}/archive` | `200` with the archived venue and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a venue.** Needs `If-Match`. |
+| POST | `/api/v1/admin/venues/{id}/restore` | `200` with the active venue and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived venue.** Needs `If-Match`. |
+| DELETE | `/api/v1/admin/venues/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a venue.** Needs `If-Match`. |
 
 ### Admin API
 
 The admin routes are one Gin route group under `/api/v1/admin`, so M2 can add authentication to
-all of them in one place. A request goes handler → service → generated queries → Postgres; the
-handler only translates between HTTP and the service.
+all of them in one place; until then they have none. A request goes handler → service →
+generated queries → Postgres; the handler only translates between HTTP and the service.
 
-A venue looks like this. Names are snake_case, optional values are `null` (never left out), times
-are RFC 3339 in UTC:
+A venue is a building (a hall is a room in it; halls come in M1 step 6b). It looks like this.
+Names are snake_case, optional values are `null` (never left out), times are RFC 3339 in UTC:
 
 ```json
 {
@@ -140,17 +142,22 @@ are RFC 3339 in UTC:
   },
   "location": {"latitude": 41.108934, "longitude": 29.010547},
   "time_zone": "Europe/Istanbul",
-  "capacity": 5000,
+  "status": "active",
+  "version": 1,
   "created_at": "2026-11-19T22:41:42.814925Z",
   "updated_at": "2026-11-19T22:41:42.814925Z"
 }
 ```
 
-**Creating a venue:** the request body has the same shape without `id`, `created_at` and
-`updated_at`. Required: `name`, `address.line1`, `address.city`, `address.country_code` and
-`time_zone`; every other field may be left out or `null`. The service trims surrounding
-whitespace from text, and optional text that is empty after trimming is stored as `null`. The
-rules (checked in `event`, before Postgres sees the input):
+`status` is `active` or `archived`. `version` starts at 1 and grows by 1 with every change; a
+response with one venue also sends it as the `ETag` header (`ETag: "1"`).
+
+**Creating a venue:** the request body has the fields from `name` to `time_zone`. `id`, `status`,
+`version` and the times are set by the server; sending them is an unknown field. Required:
+`name`, `address.line1`, `address.city`, `address.country_code` and `time_zone`; every other
+field may be left out or `null`. The service trims surrounding whitespace from text, and optional
+text that is empty after trimming is stored as `null`. The rules (checked in `event`, before
+Postgres sees the input):
 
 | Field | Rule |
 |---|---|
@@ -161,27 +168,30 @@ rules (checked in `event`, before Postgres sees the input):
 | `address.country_code` | two capital letters (the shape of an ISO 3166-1 alpha-2 code; whether the code is assigned is not checked) |
 | `location` | both `latitude` (-90 to 90) and `longitude` (-180 to 180); 6 decimals are kept |
 | `time_zone` | a name in the IANA time zone database, e.g. `Europe/Istanbul` (the binary embeds the database, `time/tzdata`) |
-| `capacity` | a whole number from 1 to 2147483647 |
+
+A venue has no capacity: each hall has its own, since that is the room's limit.
 
 The body is read strictly: `Content-Type` must be `application/json`, the body at most 64 KiB, one
-JSON object with no unknown fields (a typo like `capcity` is an error, not ignored) and nothing
+JSON object with no unknown fields (a typo like `nmae` is an error, not ignored) and nothing
 after it.
 
-**Listing venues:** `GET /api/v1/admin/venues` returns venues sorted by name (in the database's
-collation), venues with the same name by id. The answer is one page:
+**Listing venues:** `GET /api/v1/admin/venues` returns the venues of one status sorted by name (in
+the database's collation), venues with the same name by id. The answer is one page:
 
 ```json
-{"venues": [{"id": "...", "name": "Arena", ...}, ...], "next_cursor": "eyJuYW1lIjoiQ2x1YiIsImlkIjoi..."}
+{"venues": [{"id": "...", "name": "Arena", "version": 3, ...}, ...], "next_cursor": "eyJuYW1lIjoiQ2x1YiIsImlkIjoi..."}
 ```
 
 | Query parameter | Meaning |
 |---|---|
+| `status` | `active` (the default) or `archived` |
 | `limit` | venues per page, 1 to 100; default 20 |
-| `cursor` | where the page starts: the `next_cursor` of the previous page; without it, the first page |
+| `cursor` | where the page starts: the `next_cursor` of the previous page (sent with the same `status`); without it, the first page |
 
 To read every venue, request pages until `next_cursor` is `null`. It is `null` on the last page,
 also when that page is exactly full, so a client never gets an empty page at the end. An empty
-list is `{"venues": [], "next_cursor": null}`.
+list is `{"venues": [], "next_cursor": null}`. A list has no `ETag`; each venue's `version` is in
+the body, ready for an `If-Match`.
 
 The cursor is opaque: clients pass it back unchanged and never build one. Inside it are the name
 and id of the previous page's last venue (base64url JSON), so the next page starts right after
@@ -189,9 +199,30 @@ that venue (keyset pagination). Venues added or deleted meanwhile don't shift th
 cursor still works after its venue was renamed or deleted. There is no total count. Unknown query
 parameters are ignored.
 
-**Changing a venue:** `PATCH /api/v1/admin/venues/{id}` with a JSON Merge Patch (RFC 7396), sent
-as `Content-Type: application/merge-patch+json` or `application/json`. The body has the create
-body's fields, any subset of them:
+**Changes need `If-Match` (optimistic locking).** PATCH, archive, restore and DELETE must send the
+`ETag` the client last read, meaning "only if the venue is still that version":
+
+```
+GET   /api/v1/admin/venues/{id}             →  200, ETag: "3"
+PATCH /api/v1/admin/venues/{id}  If-Match: "3"  →  200, ETag: "4"
+PATCH /api/v1/admin/venues/{id}  If-Match: "3"  →  412: someone (here: the request above) changed it
+```
+
+| `If-Match` | Answer |
+|---|---|
+| the current version, e.g. `"3"` | the change is made; the response has the new `ETag` |
+| an older (or never issued) version | `412 Precondition Failed`, nothing changes: read the venue again and redo the change on the new values |
+| missing, or `*` ("any version") | `428 Precondition Required`: a change must name the version it is based on |
+| not one ETag as the API sends it: `3` without quotes, a weak `W/"3"`, a list `"3", "4"` | `400 Bad Request` |
+
+So two admins editing the same venue can't silently overwrite each other: whoever saves second
+gets a 412 and sees the first one's change before saving again. (Inside the server, the read and
+write of one change also run in one transaction with the row locked, so two requests at the same
+instant can't both pass the version check.)
+
+**Changing a venue:** `PATCH /api/v1/admin/venues/{id}` with `If-Match` and a JSON Merge Patch
+(RFC 7396), sent as `Content-Type: application/merge-patch+json` or `application/json`. The body
+has the create body's fields, any subset of them:
 
 | In the body | Effect |
 |---|---|
@@ -205,15 +236,23 @@ body's fields, any subset of them:
 {"name": "Volkswagen Arena Istanbul", "description": null, "address": {"city": "Ankara"}}
 ```
 
-The body is read as strictly as a create body (unknown fields, wrong types), and the changed venue
-must pass every create rule; otherwise nothing is stored. A location must end up with both
-coordinates or neither, so `{"location": {"latitude": 41.1}}` on a venue without a location is a
-400. The change runs in one transaction with the venue's row locked, so two admins changing the
-same venue at once can't overwrite each other's change; the second waits for the first. The
-answer is `200` with the venue as stored. Every successful PATCH sets `updated_at`, even `{}`.
+The body is read as strictly as a create body (unknown fields, wrong types; `status` and
+`version` are unknown fields too), and the changed venue must pass every create rule; otherwise
+nothing is stored. A location must end up with both coordinates or neither, so
+`{"location": {"latitude": 41.1}}` on a venue without a location is a 400. An archived venue
+can't be changed (409); restore it first. The answer is `200` with the venue as stored. Every
+successful PATCH raises the version and sets `updated_at`, even `{}`.
 
-**Deleting a venue:** `DELETE /api/v1/admin/venues/{id}` answers `204 No Content`; a venue that
-doesn't exist (also one just deleted) is a `404`.
+**Archiving and restoring:** `POST /api/v1/admin/venues/{id}/archive` and `.../restore`, with
+`If-Match` and no body. Archiving keeps the venue for history (once events exist, past events
+point at it) but hides it from the default list and closes it to changes; restoring makes it
+active again. Each raises the version. Archiving an archived venue, or restoring an active one,
+is a 409.
+
+**Deleting a venue:** `DELETE /api/v1/admin/venues/{id}` with `If-Match` answers `204 No
+Content`; a venue that doesn't exist (also one just deleted) is a `404`. Active and archived
+venues can be deleted while nothing uses them; once events exist (M1 step 8), a venue that any
+event uses can only be archived.
 
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
@@ -225,15 +264,21 @@ application/problem+json`:
 | Status | When | `detail` |
 |---|---|---|
 | `400` | invalid fields | "the request has invalid fields; see errors", plus an `errors` list with every problem at once: `[{"field":"address.city","message":"is required"}, ...]`. `field` is the path in the JSON. |
-| `400` | a list query with a `limit` that isn't a whole number from 1 to 100, or a `cursor` that isn't a `next_cursor` | "the request has invalid fields; see errors", with `field` `limit` or `cursor` |
-| `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "capcity"` or `capacity must be a whole number` |
+| `400` | a list query with a `status` other than `active` or `archived`, a `limit` that isn't a whole number from 1 to 100, or a `cursor` that isn't a `next_cursor` | "the request has invalid fields; see errors", with `field` `status`, `limit` or `cursor` |
+| `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "nmae"` or `location.latitude must be a number` |
+| `400` | an `If-Match` that isn't one ETag as the API sends it | "the If-Match header must be one ETag exactly as this API sent it, e.g. \"3\"" |
 | `404` | no venue has the id, or the id isn't a UUID | "venue not found" |
+| `409` | changing or archiving an archived venue; restoring an active one | "venue is archived: restore it first" / "venue is not archived" |
+| `412` | `If-Match` names a version that isn't the current one | "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
 | `415` | `Content-Type` isn't `application/json` (for PATCH also `application/merge-patch+json`) | what to send instead |
+| `428` | a change without `If-Match`, or with `If-Match: *` | how to send it |
 | `500` | anything unexpected, e.g. the database fails | none; the cause is logged as `request failed` at ERROR, with the request ID |
 
-A missing `location.latitude` or `location.longitude` is checked in the handler, before the
-service, so it is reported on its own, before the other field problems. The `/healthz` and `/readyz` bodies, Gin's
+The checks run in this order: the id (404), then `If-Match` (428 / 400), then the body (415, 413,
+400), then the service (404, 412, 409, 400). A missing `location.latitude` or
+`location.longitude` is checked in the handler, before the service, so it is reported on its
+own, before the other field problems. The `/healthz` and `/readyz` bodies, Gin's
 `404 page not found` for unknown routes and the recovery middleware's 500 don't use this format yet.
 
 ## Logging

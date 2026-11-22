@@ -75,7 +75,13 @@ The schema is built by numbered SQL files in `migrations/`, applied in order by 
 Go counterpart of Flyway). `schema_migrations` records the current version, like Flyway's
 `flyway_schema_history`. The files are embedded into `cmd/migrate`, so it works from any folder.
 
-**Adding a migration:**
+**Changing the schema while the milestone isn't merged:** edit the migration that holds the
+table, so each table's whole structure stays in one file (migration 1 is the venues table).
+Databases that ran the old version must be recreated: the tests' always are; locally, delete the
+Postgres volume and run `make migrate-up` again.
+
+**Adding a migration** (a new group of tables, or any change after the milestone merged into
+`main`):
 
 1. Create two files with the next number and a lowercase name:
    `000002_create_venue_layouts.up.sql` and `000002_create_venue_layouts.down.sql`.
@@ -88,9 +94,10 @@ Go counterpart of Flyway). `schema_migrations` records the current version, like
 
 **Rules:**
 
-- Never edit a migration after it was applied anywhere (another machine, CI, production). Fix it
-  with a new migration. Editing it would leave databases that ran the old version different from
-  ones that run the new version, with nothing to show it.
+- Once a milestone has merged into `main`, never edit its migrations; fix them with a new one.
+  From then on other machines, CI on `main` and later production have run them, and an edited
+  file would leave databases that ran the old version different from ones that run the new
+  version, with nothing to show it. Before the merge, only throwaway databases have run them.
 - Each file runs as one transaction: if a statement fails, the whole file is undone. So don't put
   `BEGIN` / `COMMIT` in the files, and avoid statements Postgres can't run inside a transaction,
   such as `CREATE INDEX CONCURRENTLY`.
@@ -157,7 +164,9 @@ curl -i http://localhost:8080/readyz
 curl -i -H "X-Request-ID: my-trace-42" http://localhost:8080/healthz
 ```
 
-Create a venue, then read it back from the URL in the response's `Location` header:
+Create a venue, then read it back from the URL in the response's `Location` header. Every change
+needs `If-Match` with the `ETag` of the last response for that venue (`"1"` after the create,
+`"2"` after the first change, and so on); without it the answer is 428, with an old one 412:
 
 ```bash
 curl -i -X POST http://localhost:8080/api/v1/admin/venues \
@@ -167,10 +176,15 @@ curl -i http://localhost:8080/api/v1/admin/venues/{id}
 curl -i "http://localhost:8080/api/v1/admin/venues?limit=2"
 curl -i "http://localhost:8080/api/v1/admin/venues?limit=2&cursor={next_cursor of the previous page}"
 curl -i -X PATCH http://localhost:8080/api/v1/admin/venues/{id} \
-  -H "Content-Type: application/merge-patch+json" \
-  -d '{"address":{"city":"Ankara"},"capacity":6000}'
-curl -i -X DELETE http://localhost:8080/api/v1/admin/venues/{id}
+  -H "Content-Type: application/merge-patch+json" -H 'If-Match: "1"' \
+  -d '{"address":{"city":"Ankara"}}'
+curl -i -X POST http://localhost:8080/api/v1/admin/venues/{id}/archive -H 'If-Match: "2"'
+curl -i "http://localhost:8080/api/v1/admin/venues?status=archived"
+curl -i -X POST http://localhost:8080/api/v1/admin/venues/{id}/restore -H 'If-Match: "3"'
+curl -i -X DELETE http://localhost:8080/api/v1/admin/venues/{id} -H 'If-Match: "4"'
 ```
+
+In Postman, add the `If-Match` header with the quotes, exactly as the `ETag` response header shows it.
 
 On Windows PowerShell, `curl` is an alias of `Invoke-WebRequest`; use `curl.exe` for the real one.
 PowerShell also changes the double quotes inside a JSON argument on their way to `curl.exe`, so

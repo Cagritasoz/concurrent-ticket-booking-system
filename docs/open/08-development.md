@@ -76,7 +76,8 @@ Go counterpart of Flyway). `schema_migrations` records the current version, like
 `flyway_schema_history`. The files are embedded into `cmd/migrate`, so it works from any folder.
 
 There is one migration per table, with its indexes: 1 venues, 2 halls, 3 layouts, 4 sections,
-5 seats, 6 events.
+5 seats, 6 event series, 7 events, 8 ticket tiers, 9 ticket types, 10 tier prices, 11 admin holds,
+12 tickets.
 
 **Changing the schema while the milestone isn't merged:** edit the migration that holds the
 table, so each table's whole structure stays in one file. Databases that ran the old version
@@ -86,7 +87,7 @@ must be recreated: the tests' always are; locally, delete the Postgres volume an
 **Adding a migration** (a new table, or any change after the milestone merged into `main`):
 
 1. Create two files with the next number and a lowercase name:
-   `000007_create_ticket_tiers.up.sql` and `000007_create_ticket_tiers.down.sql`.
+   `000013_create_organizations.up.sql` and `000013_create_organizations.down.sql`.
 2. The up file makes the change; the down file undoes exactly that change.
 3. Check both directions: `make migrate-up`, `make migrate-down`, `make migrate-up`.
 4. Run `make generate`: sqlc reads the migrations as its schema, so a changed table changes the

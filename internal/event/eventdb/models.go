@@ -10,6 +10,46 @@ import (
 	"uuid"
 )
 
+type AdminHold struct {
+	ID        uuid.UUID
+	EventID   uuid.UUID
+	Name      string
+	Reason    string
+	Note      *string
+	Version   int32
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type Event struct {
+	ID          uuid.UUID
+	LayoutID    uuid.UUID
+	HallID      uuid.UUID
+	SeriesID    *uuid.UUID
+	Name        string
+	Description *string
+	StartsAt    time.Time
+	EndsAt      time.Time
+	DoorsOpenAt *time.Time
+	OnSaleAt    *time.Time
+	Currency    string
+	Status      string
+	PublishedAt *time.Time
+	CancelledAt *time.Time
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type EventSeries struct {
+	ID          uuid.UUID
+	Name        string
+	Description *string
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type Hall struct {
 	ID          uuid.UUID
 	VenueID     uuid.UUID
@@ -33,6 +73,23 @@ type Layout struct {
 	UpdatedAt   time.Time
 }
 
+type Seat struct {
+	ID             uuid.UUID
+	SectionID      uuid.UUID
+	SectionKind    string
+	RowLabel       string
+	SeatLabel      string
+	RowPosition    int32
+	SeatPosition   int32
+	Type           string
+	RestrictedView bool
+	ViewNote       *string
+	Aisle          bool
+	Version        int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type Section struct {
 	ID        uuid.UUID
 	LayoutID  uuid.UUID
@@ -42,6 +99,51 @@ type Section struct {
 	Version   int32
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type Ticket struct {
+	ID        uuid.UUID
+	EventID   uuid.UUID
+	TierID    uuid.UUID
+	Kind      string
+	SectionID uuid.UUID
+	SeatID    *uuid.UUID
+	Status    string
+	HoldID    *uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type TicketTier struct {
+	ID               uuid.UUID
+	EventID          uuid.UUID
+	Name             string
+	Description      *string
+	Kind             string
+	PerCustomerLimit *int32
+	Version          int32
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type TicketType struct {
+	ID          uuid.UUID
+	EventID     uuid.UUID
+	Name        string
+	Description *string
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type TierPrice struct {
+	TierID       uuid.UUID
+	TicketTypeID uuid.UUID
+	EventID      uuid.UUID
+	PriceAmount  int64
+	Version      int32
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type Venue struct {

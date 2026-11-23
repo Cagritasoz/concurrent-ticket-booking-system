@@ -16,8 +16,9 @@ New to the project? Read them in order:
 | 07 | [Configuration](07-configuration.md) | Every environment variable with its default and valid values |
 | 08 | [Development](08-development.md) | Local setup, tools, commands and testing conventions |
 | 09 | [Learning examples](09-examples.md) | The early learning code in `examples/` and the lessons taken from it |
-| 10 | [System flows](10-system-flows.md) | How the planned system behaves: modules, booking lifecycle, Redis's role, buying, paying, cancelling, expiry, refunds |
+| 10 | [System flows](10-system-flows.md) | How the planned system behaves: modules, how the event tables fit together (venues to tickets, tiers, ticket types, prices), which events are supported, booking lifecycle, Redis's role, buying, paying, cancelling, expiry, refunds |
 | 11 | [Migration failures and recovery](11-migration-recovery.md) | How golang-migrate records state, every way an up or down can fail, and how to use `force` correctly |
+| 12 | [Domain model](12-domain-model.md) | Every table of the finished system and how they relate, built and planned: series, passes, tables and boxes, bookings as orders, the ticket a customer gets, known limits |
 
 Reading tip: after 01 and 02, [10 · System flows](10-system-flows.md) is the best picture of the
 system as a whole.

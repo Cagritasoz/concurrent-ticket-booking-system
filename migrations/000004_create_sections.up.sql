@@ -1,7 +1,7 @@
 -- A section is a part of a layout, of one of two kinds:
 --   seated:   "Block 101", "Balcony"; its seats are rows of the seats table (migration 5)
 --   standing: "Floor", "Pit"; general admission, no seats, only a capacity
--- Every ticket will have a place: a seat, or a standing section (M1 step 10). Whether an event is
+-- Every ticket has a place: a seat, or a standing section (migration 12). Whether an event is
 -- seated, standing or mixed isn't stored anywhere: it follows from its layout's sections.
 --
 -- A section has no status: it is part of its layout's definition and is changed while the layout

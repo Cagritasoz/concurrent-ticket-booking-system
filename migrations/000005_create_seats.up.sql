@@ -1,6 +1,6 @@
 -- A seat is one place in a seated section: row "A", seat "12". Admins create them in bulk, a row
--- at a time (M1 step 7). Publishing an event creates one ticket per seat of its layout (M1 step
--- 10); what changes per event (sold, held, killed, the tier and price) lives on those tickets, not
+-- at a time (M1 step 7). An event has one ticket per seat its tiers sell (migration 12); what
+-- changes per event (the tier, held, killed, sold) is on those tickets and their bookings, not
 -- here. Like sections, seats have no status and are part of their layout's definition.
 CREATE TABLE seats (
     id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -39,7 +39,10 @@ CREATE TABLE seats (
     -- while it has seats (NO ACTION on update).
     CONSTRAINT seats_section_id_fkey FOREIGN KEY (section_id, section_kind)
         REFERENCES sections (id, kind) ON DELETE CASCADE,
-    CONSTRAINT seats_view_note_only_restricted CHECK (view_note IS NULL OR restricted_view)
+    CONSTRAINT seats_view_note_only_restricted CHECK (view_note IS NULL OR restricted_view),
+    -- (id, section_id) is unique, so a ticket can reference both and the database keeps a
+    -- ticket's section equal to its seat's (tickets_seat_id_fkey, migration 12).
+    CONSTRAINT seats_id_section_id_key UNIQUE (id, section_id)
 );
 
 -- One seat per place: two seats of a section can't have the same row and seat position. section_id

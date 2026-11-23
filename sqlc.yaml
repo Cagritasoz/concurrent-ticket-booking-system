@@ -32,12 +32,18 @@ sql:
             go_type:
               import: uuid
               type: UUID
+          # An override covers only NOT NULL columns unless it says nullable; optional ids and
+          # times (e.g. tickets.seat_id, events.doors_open_at) become pointers, nil meaning NULL.
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: uuid
+              type: UUID
+              pointer: true
           - db_type: timestamptz
             go_type:
               import: time
               type: Time
-          # An override covers only NOT NULL columns unless it says nullable; optional times
-          # (e.g. events.ends_at) become *time.Time, nil meaning NULL.
           - db_type: timestamptz
             nullable: true
             go_type:

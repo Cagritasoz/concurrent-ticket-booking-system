@@ -1,16 +1,18 @@
 # 10 · System flows
 
 How the planned system behaves from the user's point of view and inside the application: what
-each module does, the booking lifecycle, Redis's role, and the main paths (buying, cancelling,
-abandoning, paying, refunding). This is design, not code: none of it is built yet. The milestone
-that builds each part is in the [roadmap](02-roadmap.md); the rules it must respect are the
-[invariants](04-invariants.md).
+each module does, how the event side's tables fit together, the booking lifecycle, Redis's role,
+and the main paths (buying, cancelling, abandoning, paying, refunding). The event side's tables
+exist (migrations 1 to 12, M1 step 6a); the flows that use them are design, not code yet. The
+milestone that builds each part is in the [roadmap](02-roadmap.md); the rules it must respect are
+the [invariants](04-invariants.md); why each table looks the way it does is in the
+[decisions](05-decisions.md).
 
 ## The parts and what each does
 
 | Part | Responsibility | Source of truth for |
 |---|---|---|
-| **event** module | Admin side: venues with their halls, layouts, sections and seats, events, ticket tiers, generating one ticket row per sellable unit, publishing and cancelling events | Events, tiers, prices, tickets |
+| **event** module | Admin side: venues with their halls, layouts, sections and seats, events, ticket tiers and ticket types with their prices, generating one ticket row per sellable unit, publishing and cancelling events | Events, tiers, ticket types, prices, tickets |
 | **booking** module | Customer side: holding tickets, the booking lifecycle, idempotent requests, per-customer limits, Stripe payments, webhooks, expiry, reconciliation, refunds | Bookings, who owns which ticket, payments |
 | **search** module | Fast discovery for users: full-text search, filters, sorting, pagination over Elasticsearch | Nothing: it is a read-only copy of Postgres |
 | **auth** | Verifies Keycloak login tokens and roles (venue manager, organizer, customer); organizations, their members and venue access grants live in Postgres | Nothing: Keycloak owns identities |
@@ -18,6 +20,228 @@ that builds each part is in the [roadmap](02-roadmap.md); the rules it must resp
 | **Postgres** | The database | Everything that matters: ownership, state, money |
 | **Redis** | A fast in-memory filter in front of Postgres for contested tickets | Nothing: losing it never breaks correctness |
 | **Stripe** | Takes the card payment | Whether money moved |
+
+## How the event side's tables fit together
+
+Twelve tables, in three groups. Table names are in `code`; the number is the migration that
+creates the table. The whole domain, with the tables later milestones add (passes, bookings,
+payments), is mapped in [12 · Domain model](12-domain-model.md).
+
+```
+ THE ROOM (described once, reused by many events)
+ venues (1) ─< halls (2) ─< layouts (3) ─< sections (4) ─< seats (5)
+                                 │              │            │
+ THE EVENT AND ITS PRICES        │              │            │
+ events (7) >────────────────────┘              │            │
+   ├──> event_series (6), if it is in one       │            │
+   ├─< ticket_tiers (8) ─┐                      │            │
+   ├─< ticket_types (9) ─┴─< tier_prices (10)   │            │
+   │                                            │            │
+ THE INVENTORY                                  │            │
+   ├─< admin_holds (11)                         │            │
+   └─< tickets (12) >── tier, hold ─────────────┴── section ─┴── seat (seated tickets only)
+
+ A ─< B: one A has many B (B has a foreign key to A). A ──> B: A may point at one B.
+```
+
+### The room: venue, hall, layout, section, seat
+
+These five tables describe a building and how its rooms can be set up. They sell nothing and know
+nothing about dates or prices.
+
+| Table | What a row is | Example |
+|---|---|---|
+| `venues` | A building, with its address and time zone | Zorlu PSM, Istanbul |
+| `halls` | A room in it that can host an event while the other rooms host theirs | Turkcell Stage; a cinema's Screen 3 |
+| `layouts` | One way to set up a hall. A hall has one layout per setup, used one at a time | "Concert, standing floor"; "Theater, all seated" |
+| `sections` | A part of a layout: `seated` (has seats) or `standing` (has only a `capacity`) | "Block 101" (seated); "Floor" (standing, 3,000 people) |
+| `seats` | One seat of a seated section: labels printed on the ticket, positions for ordering, accessibility | Row "A", seat "12"; a wheelchair space |
+
+Deleting a venue deletes everything below it (`ON DELETE CASCADE`), unless an event or ticket uses
+it: then the delete is refused, and archiving is the way to retire it. A layout that a published
+event uses is frozen; to change it, an admin copies it (M1 step 11).
+
+### The event: one date in one layout
+
+`events`: one occurrence, such as "Duman, 14 March 2027, 20:00 to 23:00", in one layout (and so
+in one hall). 30 showings of a film are 30 events, which an **event series** (`event_series`)
+can group: a film's run, a theater season, a team's home matches, a festival's days. Each event
+of a series keeps its own date, layout, tiers and prices (a matinee is often cheaper); the series
+only groups them, and a series with events can't be deleted. An event has:
+
+- `series_id`: the series it belongs to, or NULL for a one-off event.
+
+- `layout_id` and `hall_id`: the setup and the room. `hall_id` repeats the layout's hall so the
+  database can stop **two events in one hall from overlapping in time**
+  (`events_no_overlap_in_hall`); a foreign key on `(layout_id, hall_id)` keeps it equal to the
+  layout's hall.
+- `starts_at`, `ends_at`, optional `doors_open_at`, and optional `on_sale_at` (when sales open; no
+  value means as soon as it is published).
+- `currency`: every price of the event is in it.
+- `status`: `draft` (being prepared, nobody can book), `published` (visible; on sale from
+  `on_sale_at`), `cancelled`.
+
+### What an event sells: tiers, ticket types and prices
+
+A ticket's price depends on two separate questions, and each has its own table:
+
+| Question | Table | Examples |
+|---|---|---|
+| **Where** is the ticket? | `ticket_tiers`: a price level. `kind` `seated` (the customer picks seats) or `standing` (the customer picks a quantity); an optional per-customer limit | "Stalls", "Balcony", "VIP", "Floor", "Floor early bird" |
+| **Who** is it for? | `ticket_types`: per event, with a description of who qualifies (checked at the door) | "Adult", "Student", "Child"; or just "Standard" |
+| **What does it cost?** | `tier_prices`: one row per tier and ticket type, the price in minor units of the event's currency (`45000` is 450.00 TRY) | Stalls + Adult = 450.00 |
+
+So the prices of an event form a matrix:
+
+```
+              Adult     Student
+ Stalls       450.00    300.00
+ Balcony      300.00    200.00
+ VIP          900.00    -          no row: Student tickets aren't sold in VIP
+```
+
+**An event with only one kind of ticket**, such as only standard adult tickets, is the smallest
+case: one ticket type ("Standard" or "Adult") and one price per tier. A standing-only club night
+is one tier ("Floor"), one ticket type ("Standard") and one price. There is no hidden default
+type: every price needs a ticket type, so every event has at least one.
+
+The ticket type isn't stored on the ticket. A seat is a seat; the customer chooses "Adult" or
+"Student" when booking, and the booking records the type and the price it had (M3).
+
+### The inventory: tickets
+
+`tickets`: one row per thing that can be sold once: one seat, or one place in a standing
+section. 1,500 seats in tiers plus 3,000 standing places on the floor is 4,500 ticket rows for
+that event.
+A ticket has:
+
+- `event_id`, `tier_id`: which event and which tier sells it;
+- `kind`, `section_id`, and `seat_id` for a seated ticket (empty for a standing one);
+- `status`: `available`, `held` (kept out of sale by an admin hold, `hold_id`) or `killed`
+  (removed from sale for good, such as a seat behind a camera).
+
+Not on the ticket: whether it is sold (a booking's items say so, M3) and its ticket type (chosen
+when booking).
+
+Each seat has at most one ticket per event (`tickets_seat_id_event_id_key`). A ticket's tier is
+how the seat is sold, so this one index also means **a seat is in at most one tier of an event**.
+The same seat has its own ticket in every other event that uses the layout.
+
+### How tickets are created
+
+Tickets are created **while the event is still a draft**, when an admin gives a tier what it
+sells (M1 step 9). They are created in bulk, by one SQL statement that Postgres runs on its own,
+without sending rows through Go:
+
+| Admin action | What happens to `tickets` |
+|---|---|
+| Put section "Block 101" (400 seats) in tier "Stalls" | 400 rows inserted, one per seat: `INSERT INTO tickets … SELECT … FROM seats WHERE section_id = …` |
+| Put single seats A-1 to A-4 in tier "VIP" | 4 rows inserted |
+| Move seat A-5 from "Stalls" to "VIP" | its ticket's `tier_id` changes |
+| Give tier "Floor" 2,500 places of the standing section "Floor" | 2,500 rows inserted: `INSERT … SELECT … FROM generate_series(1, 2500)` |
+| Give tier "Floor early bird" 500 places of the same section | 500 more rows: tiers can share a standing section, up to its capacity |
+| Lower "Floor" from 2,500 to 2,000 | 500 available "Floor" tickets deleted |
+| Hold 20 seats for the artist | an `admin_holds` row, and those 20 tickets become `held` with its `hold_id` |
+| Kill 6 seats behind the mixing desk | those tickets become `killed` |
+
+A seat of the layout that no tier was given has no ticket and isn't sold. Every change takes the
+event's lock (invariant I14), so two admins can't change the same event's tickets at once.
+
+**After publishing** (M1 step 11) the same actions still work, on **unsold** tickets only: a
+ticket that a held (pending payment) or confirmed booking has can't be moved, held or killed, and
+a bulk change that includes one is refused as a whole. Two actions change: lowering a quantity or
+taking a seat out of a tier **kills** tickets instead of deleting them, and raising a quantity
+revives that tier's killed places first. Prices can change too; a new price applies to new
+bookings, since a booking copies its price. The layout and the date stay fixed. The full rule is
+in [05 · Decisions](05-decisions.md) ("What can change after publishing").
+
+### An event's data from draft to sale
+
+1. **Create the event** in a layout: an `events` row, `draft`.
+2. **Create the tiers** (`ticket_tiers`) and **the ticket types** (`ticket_types`).
+3. **Set the prices**: a `tier_prices` row for each type sold in each tier.
+4. **Give the tiers seats and standing places**: tickets are created (above).
+5. **Place admin holds and kills** if needed.
+6. **Publish**: the service checks that the layout is active, every tier has at least one price,
+   each standing section's tickets fit its capacity, and all tickets fit the hall's capacity;
+   then the status becomes `published`. No rows are created at this point.
+7. **Sales open** at `on_sale_at` (or right away). Customers book tickets (M3): picking seats or a
+   quantity, and a ticket type for each.
+8. **Cancel** if needed: the status becomes `cancelled` and its bookings are refunded (M7).
+
+A draft can be deleted: the service deletes its tickets first (tickets refuse to let anything
+they point at be deleted), and the event then takes its tiers, ticket types, prices and holds
+with it.
+
+### Following one ticket through the tables
+
+A customer looks at ticket T for seat A-12 of the event "Duman, 14 March":
+
+```
+ tickets T ── tier_id ───► ticket_tiers "Stalls" ── event_id ──► events "Duman, 14 March"
+   │                                                               │ layout_id
+   ├── seat_id ───► seats A-12 ── section_id ─┐                    ▼
+   └── section_id ─────────────────────────────┴► sections "Block 101" ──► layouts "Theater"
+                                                                           ──► halls ──► venues
+
+ Price shown: tier_prices (Stalls, Adult) = 450.00 TRY, (Stalls, Student) = 300.00 TRY
+```
+
+### What the database guarantees, and what the services check
+
+The database guarantees, with the constraint that does it:
+
+| Rule | How |
+|---|---|
+| Seats only in seated sections | `seats_section_id_fkey`: seats reference `(id, kind)` of sections, with `section_kind` always `seated` |
+| An event's hall is its layout's hall | `events_layout_id_fkey` on `(layout_id, hall_id)` |
+| No two events overlap in one hall (cancelled ones don't count) | `events_no_overlap_in_hall`, an exclusion constraint |
+| A price's tier and ticket type are of the same event | `tier_prices_tier_id_fkey` and `tier_prices_ticket_type_id_fkey`, both over `(…, event_id)` |
+| A ticket's tier is of the ticket's event and kind | `tickets_tier_id_fkey` on `(tier_id, event_id, kind)` |
+| A standing ticket is in a standing section; a seated ticket has a seat of its section | `tickets_section_id_fkey` on `(section_id, kind)`, `tickets_seat_id_fkey` on `(seat_id, section_id)`, `tickets_seat_only_seated` |
+| A held ticket has a hold of its own event | `tickets_hold_only_held`, `tickets_hold_id_fkey` on `(hold_id, event_id)` |
+| One ticket per seat and event, so one tier per seat | `tickets_seat_id_event_id_key` |
+| Names unique per parent, ignoring case | `…_name_key` unique indexes |
+
+The services check what the database can't see, with the event locked:
+- a ticket's section is in the event's layout (so a draft changes layout only while it has no
+  tickets);
+- a standing section's tickets, of all tiers together, fit its capacity;
+- at publish, every tier has at least one price.
+
+## Which events the model supports
+
+**Supported:**
+
+| Event | How it fits |
+|---|---|
+| Reserved-seat theater, opera, seated concerts, cinema showings | Seated sections and seated tiers; each showing is its own event |
+| Standing concerts, club nights | Standing sections with a capacity, standing tiers with quantities |
+| Mixed arena shows (seated blocks and a standing floor) | One layout with both kinds of section |
+| One hall in different setups (concert one night, basketball the next) | Several layouts per hall; events never overlap in a hall |
+| Several price levels; early bird and regular sharing one floor | Several tiers; several standing tiers in one section |
+| Adult, student, child (or only "Standard") prices | Ticket types and the price matrix |
+| Free events | A price of 0 |
+| Per-customer limits | `per_customer_limit` on the tier (enforced in M3) |
+| Guest lists, press and sponsor seats, camera positions | Admin holds and kills |
+| Announced first, on sale later | `on_sale_at` |
+| Multiplexes, buildings with several rooms running at once | The no-overlap rule is per hall |
+| A film's run, a theater season, a team's home matches, a festival's days | An event series groups the events; each keeps its own date, tiers and prices |
+| Rescaling while on sale (move unsold seats to another tier, reprice, late holds and kills) | Unsold tickets stay editable after publishing; bookings copy their price (M1 step 11) |
+
+**Not supported yet:**
+
+| Event or feature | Why not |
+|---|---|
+| Festival passes, season tickets, multi-day tickets | A ticket belongs to one event; there is no pass or package |
+| An event using several halls at once (a conference, a whole-venue festival) | An event has one layout, so one hall |
+| Timed entry (museum slots) | Possible as many small standing events, but clumsy |
+| Tables or boxes sold only as a whole | A ticket is one seat; this needs a seat group and a booking rule |
+| Online or streamed events, events without a venue | Every event needs a hall |
+| A "postponed" or "rescheduled" status | Only draft, published and cancelled; a published event's date stays fixed, and postponing is settled with cancellations (M7) |
+| Rules per ticket type (a child needs an adult, a limit per type), presales and sales windows per tier | Only the description says who qualifies; enforced tier rules come later |
+| Fees, taxes, automatic dynamic pricing | Not modelled yet (an admin can change prices by hand); fees and taxes are rounded to minor units when they come |
+| A drawn seat map (section shapes, curved rows, the stage) | The seat map is a grid per section from the row and seat positions; a drawing per layout comes with the admin UI |
 
 ## Booking lifecycle (state machine)
 
@@ -75,20 +299,24 @@ the PENDING_PAYMENT booking in Postgres; the Redis key is a fast mirror of it.
    is built for this: full-text matching, typo tolerance, filters (city, date, category, price),
    sorting and paging. Results show events with a "from €12" price and, at most, a coarse
    "sold out" flag. Elasticsearch never decides availability (invariant I12).
-2. **Open the event.** The event page loads from **Postgres**: tiers, prices, and, for a seated
-   event, the seat map with each seat's state (free, or taken by an active booking).
-3. **Pick seats.** The user clicks B-7-12 and B-7-13. Clicking is only a selection in the
+2. **Open the event.** The event page loads from **Postgres**: tiers, ticket types and their
+   prices, and, for a seated event, the seat map with each seat's state (free, or taken by an
+   active booking).
+3. **Pick seats.** The user clicks B-7-12 and B-7-13 and picks a ticket type for each (Adult,
+   Student). Clicking is only a selection in the
    frontend; **nothing is reserved yet**, and no Redis key exists.
 4. **Reserve.** The user presses "Continue", which sends `POST /bookings` with the two tickets and
    an `Idempotency-Key` header (the user must be logged in through Keycloak). The **booking**
    module:
    1. checks the idempotency key: a retry or a double-click returns the same booking instead of
       creating a second one (invariant I6);
-   2. runs the booking rules: the tier is on sale, the per-customer limit isn't exceeded, and so on;
+   2. runs the booking rules: the event is published and on sale (`on_sale_at`), each ticket type
+      has a price in the ticket's tier, the per-customer limit isn't exceeded, and so on;
    3. picks a new booking ID and tries `SET NX` in Redis for each ticket. If any key is already
       taken, it stops right away with "seat no longer available" and releases the keys it did get;
    4. in **one Postgres transaction**: inserts the booking (PENDING_PAYMENT, `expires_at`), its
-      line ("2 × Standard, €12 each", price copied from the tier, invariant I4) and its items
+      lines ("1 × Stalls Adult, €12" and "1 × Stalls Student, €8", the type and its price copied
+      from `tier_prices`, invariant I4) and its items
       (the two ticket IDs), and bumps the customer's limit counter. The unique index rejects any
       ticket that is already in an active booking, which rolls the whole booking back
       (all-or-nothing); the Redis keys are then released;

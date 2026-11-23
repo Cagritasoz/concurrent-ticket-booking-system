@@ -1,5 +1,5 @@
 -- A layout is one way a hall is set up: "Concert – standing floor", "Basketball", "Theatre
--- setup". A hall is in one layout at a time; every event takes place in one layout (migration 6).
+-- setup". A hall is in one layout at a time; every event takes place in one layout (migration 7).
 -- Its capacity isn't stored: it is the sum of its sections' seats and standing capacities.
 --
 -- A layout that a published event uses is frozen: its sections and seats can't change, so the
@@ -19,7 +19,12 @@ CREATE TABLE layouts (
     version     integer      NOT NULL DEFAULT 1 CHECK (version > 0),
 
     created_at  timestamptz  NOT NULL DEFAULT now(),
-    updated_at  timestamptz  NOT NULL DEFAULT now()
+    updated_at  timestamptz  NOT NULL DEFAULT now(),
+
+    -- id alone is already unique; (id, hall_id) is unique too, so an event can reference both
+    -- and the database itself keeps the event's hall_id equal to its layout's hall
+    -- (events_layout_id_fkey, migration 7).
+    CONSTRAINT layouts_id_hall_id_key UNIQUE (id, hall_id)
 );
 
 -- Two layouts of one hall can't share a name, ignoring case; archived layouts don't count, as for

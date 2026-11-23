@@ -7,7 +7,7 @@
 --            └─ section   "Parterre", "Floor"   seated, or standing with a capacity   (4)
 --                └─ seat     row "A", seat "12" only in seated sections               (5)
 --
--- Events (6) point at a layout without CASCADE, so a venue, hall or layout that an event uses
+-- Events (7) point at a layout without CASCADE, so a venue, hall or layout that an event uses
 -- can't be deleted: it is archived instead.
 --
 -- status and version work as in venues (migration 1): status is changed only by compare-and-set

@@ -1,7 +1,8 @@
 # 04 · Correctness invariants
 
 These rules must hold at all times, including under concurrency, retries, crashes and outages.
-Most are not implemented yet (I15 is, for venues); they guide the design of milestones M1–M8,
+Most are not implemented yet (I15 is, for venues; I16 by the schema); they guide the design of
+milestones M1–M8,
 and each one gets tests when it is built (see the [roadmap](02-roadmap.md)).
 
 | # | Invariant | How it is enforced |
@@ -19,8 +20,9 @@ and each one gets tests when it is built (see the [roadmap](02-roadmap.md)).
 | I11 | Only the holder can release a hold. | The Redis value is the booking ID; release uses a Lua compare-and-delete. |
 | I12 | Elasticsearch never drives booking or pricing, and it converges to Postgres. | Transactional outbox, external versioning, alias-swap rebuild; only coarse availability (e.g. a sold-out flag) is stored in Elasticsearch. |
 | I13 | Customers see only their own bookings; venue managers change only their own venues' maps; organizers manage only their own events, and only in venues that granted them access. | A role check in middleware + an ownership check in the services (organization memberships and venue access grants, M2). |
-| I14 | Held or sold inventory can't be removed underneath customers. | Admin edits lock the event `FOR UPDATE`; booking creation takes `FOR SHARE`; cancelling an event triggers refunds. |
+| I14 | Held or sold inventory can't be removed underneath customers. | Admin edits lock the event `FOR UPDATE`; booking creation takes `FOR SHARE`; an admin edit (move, hold, kill) refuses any ticket in an active booking, and a bulk edit that includes one is refused as a whole; removing inventory from a published event kills tickets instead of deleting them; cancelling an event triggers refunds. |
 | I15 | An admin change never overwrites a change its author hasn't seen. | Every changeable object has a `version`, sent as its `ETag`; changes require `If-Match` with it (412 if it moved on, 428 if missing) and run with the row locked. |
+| I16 | Two events in one hall never overlap in time (cancelled ones don't count). | An exclusion constraint on `events` over the hall and `[starts_at, ends_at)`; the event's `hall_id` is kept equal to its layout's hall by a foreign key. |
 
 ## Redis failure behavior
 

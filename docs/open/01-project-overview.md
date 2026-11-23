@@ -40,16 +40,17 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 | Language | Go 1.27, module `github.com/Cagritasoz/concurrent-ticket-booking-system` | in use |
 | HTTP | Gin v1.12.0, only inside the HTTP layer | in use |
 | Logging | `log/slog` (standard library), JSON to stdout | in use |
-| Database | PostgreSQL via pgx + sqlc (type-safe Go generated from SQL) | planned (M1) |
-| Migrations | golang-migrate | planned (M1) |
+| Database | PostgreSQL 17 via pgx + sqlc (type-safe Go generated from SQL) | in use (pgx v5.12.0, sqlc v1.31.1) |
+| Migrations | golang-migrate v4.20.1, plain SQL files run by `cmd/migrate` | in use |
 | Auth | Keycloak via OIDC (coreos/go-oidc); never a custom identity provider | planned (M2) |
 | Holds / cache | Redis (`SET NX` with expiry), never the only correctness mechanism | planned (M5) |
 | Payments | Stripe PaymentIntents + webhooks (stripe-go) | planned (M6) |
 | Search | Elasticsearch (official go-elasticsearch client) | planned (M8) |
 | Metrics | Prometheus client | planned (M9) |
-| Testing | `testing` package, race detector; later Testcontainers, fuzzing, k6 load tests | partly in use |
-| Local infra | Docker Compose | in use (Redis for the examples) |
+| Testing | `testing` package, race detector, Testcontainers (Postgres); later fuzzing, k6 load tests | partly in use |
+| Local infra | Docker Compose | in use (Postgres; Redis for the examples) |
 | CI | GitHub Actions | in use |
+| Frontend | TypeScript + React (admin UI, then customer UI) | planned (after M2) |
 | Gateway | Traefik, only if a real need appears | not planned |
 
 ## Requirements
@@ -78,8 +79,8 @@ The modules are planned; see the [roadmap](02-roadmap.md) for what exists today.
 
 ### Auth
 - Keycloak OIDC. JWT signature, issuer, expiry, audience and permissions are validated.
-- Resource-level authorization in the application, with separate customer and event-admin
-  permissions.
+- Resource-level authorization in the application, with three roles: venue managers (their own
+  venues' maps), organizers (their own events, in venues that granted them access) and customers.
 
 ### Engineering
 - Docker Compose for local infrastructure; GitHub Actions for format, lint, unit tests,

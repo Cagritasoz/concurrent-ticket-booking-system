@@ -2,7 +2,7 @@
 // and validates them.
 //
 // It plays the role of application.properties + @ConfigurationProperties + @Validated in Spring
-// Boot. Every variable has a default, so the app starts without any environment set.
+// Boot. Every variable has a default except DATABASE_URL, which is required.
 // The full list of variables is documented in docs/open/07-configuration.md and .env.example.
 package config
 
@@ -10,14 +10,21 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
 // Config holds all settings of the application.
 type Config struct {
 	HTTP            HTTPConfig
+	Database        DatabaseConfig
 	Log             LogConfig
 	ShutdownTimeout time.Duration // SHUTDOWN_TIMEOUT: maximum time for graceful shutdown.
+}
+
+// DatabaseConfig holds the database settings.
+type DatabaseConfig struct {
+	URL string // DATABASE_URL: Postgres connection URL. It contains a password, so never log it.
 }
 
 // HTTPConfig holds the HTTP server settings.
@@ -64,6 +71,9 @@ func Load(lookup LookupFunc) (Config, error) {
 			WriteTimeout:      r.duration("HTTP_WRITE_TIMEOUT", defaultWriteTimeout),
 			IdleTimeout:       r.duration("HTTP_IDLE_TIMEOUT", defaultIdleTimeout),
 		},
+		Database: DatabaseConfig{
+			URL: r.string("DATABASE_URL", ""), // No default: Validate reports it as missing.
+		},
 		Log: LogConfig{
 			Level:  r.string("LOG_LEVEL", defaultLogLevel),
 			Format: r.string("LOG_FORMAT", defaultLogFormat),
@@ -86,6 +96,14 @@ func (c Config) Validate() error {
 
 	if _, _, err := net.SplitHostPort(c.HTTP.Addr); err != nil {
 		errs = append(errs, fmt.Errorf("HTTP_ADDR %q must look like host:port or :port", c.HTTP.Addr))
+	}
+
+	// The error messages leave out the value, because it contains a password.
+	switch {
+	case c.Database.URL == "":
+		errs = append(errs, errors.New("DATABASE_URL is required"))
+	case !strings.HasPrefix(c.Database.URL, "postgres://") && !strings.HasPrefix(c.Database.URL, "postgresql://"):
+		errs = append(errs, errors.New("DATABASE_URL must start with postgres:// or postgresql://"))
 	}
 
 	// Define anonymous struct type with two fields and initialize the slice.
@@ -141,7 +159,9 @@ func (r *reader) duration(key string, def time.Duration) time.Duration {
 	if !ok || v == "" {
 		return def
 	}
-	d, err := time.ParseDuration(v) // Try to parse the handwritten variable, .env must therefore use go syntax for durations.
+	// Wherever the value comes from (the shell, the IDE, CI), it must use Go's duration syntax: a
+	// plain 15 without a unit is rejected.
+	d, err := time.ParseDuration(v)
 	if err != nil {
 		// %q quotes the variable v.
 		r.errs = append(r.errs, fmt.Errorf("%s %q is not a valid duration (examples: 500ms, 15s, 2m)", key, v))

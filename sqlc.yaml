@@ -1,0 +1,62 @@
+# sqlc reads the SQL queries in each module's queries/ folder and generates type-safe Go functions
+# for them, like Spring Data repository methods written with @Query, but generated before
+# compiling instead of at runtime. Run "make generate" after changing a query or a migration, and
+# commit the generated files. CI fails if they are out of date.
+#
+# In a queries file, each query starts with a comment like "-- name: GetVenue :one". It names the
+# Go method and says what it returns: :one a single row, :many a slice, :exec nothing, :execrows
+# the number of rows changed. Comment lines right after it become the method's Go comment, and
+# @id is a parameter, typed like the column it is compared with or stored in. SELECT * and
+# RETURNING * are expanded into the column list and return the table's struct (eventdb.Venue).
+version: "2"
+sql:
+  - engine: postgresql
+    # The schema is the migrations folder. sqlc understands golang-migrate's file names and skips
+    # the .down.sql files, so the tables it sees are the ones "make migrate-up" creates.
+    schema: migrations
+    queries: internal/event/queries
+    gen:
+      go:
+        package: eventdb
+        out: internal/event/eventdb
+        # Generate code for pgx directly, not database/sql: the app's pool is pgxpool.
+        sql_package: pgx/v5
+        # A nullable column becomes a pointer (*string, *int32), nil meaning NULL, instead of
+        # pgx's wrapper types such as pgtype.Text.
+        emit_pointers_for_null_types: true
+        # A :many query with no rows returns an empty slice, not nil, so it is [] in JSON.
+        emit_empty_slices: true
+        overrides:
+          # Standard Go types instead of pgx's own ones for the columns we use.
+          - db_type: uuid
+            go_type:
+              import: uuid
+              type: UUID
+          # An override covers only NOT NULL columns unless it says nullable; optional ids and
+          # times (e.g. tickets.seat_id, events.doors_open_at) become pointers, nil meaning NULL.
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: uuid
+              type: UUID
+              pointer: true
+          - db_type: timestamptz
+            go_type:
+              import: time
+              type: Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          # Map positions are plain numbers, not money, so float64 is precise enough (numeric
+          # would otherwise become pgtype.Numeric).
+          - column: venues.latitude
+            go_type:
+              type: float64
+              pointer: true
+          - column: venues.longitude
+            go_type:
+              type: float64
+              pointer: true

@@ -1,14 +1,46 @@
 # 07 · Configuration
 
 The application is configured only through environment variables, read by `internal/config`.
-Every variable is optional. A variable that is not set, or is set to an empty value, uses its
-default. Invalid values stop the application at startup, and all problems are reported together.
+`DATABASE_URL` is required. Every other variable is optional: if it is not set, or is set to an
+empty value, it uses its default. Invalid values stop the application at startup, and all problems
+are reported together.
 
 Locally, copy `.env.example` to `.env` and load it into the run configuration with your IDE's
-.env plugin. `.env` is ignored by git; never commit real secrets.
+.env plugin. Docker Compose also reads `.env`, on its own, to fill in its `${...}` values. `.env` is
+ignored by git; never commit real secrets.
 
 Durations use Go syntax (`time.ParseDuration`): `500ms`, `15s`, `2m`, `1h30m`.
 A plain number without a unit (e.g. `15`) is invalid.
+
+## Database
+
+| Variable | Default | Valid values | Meaning |
+|---|---|---|---|
+| `DATABASE_URL` | none, required | `postgres://` or `postgresql://` URL | Postgres connection, e.g. `postgres://user:password@localhost:5432/database?sslmode=disable`. Special characters in the password must be percent-encoded (`@` becomes `%40`). `sslmode=disable` is for local use only. Pool settings such as `pool_max_conns=10` can be added. It contains a password, so it is never logged or printed in errors. |
+
+Docker Compose reads these to create the local Postgres container. The app doesn't read them, so
+they must match `DATABASE_URL`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `POSTGRES_USER` | none, required | Database user created on first start. |
+| `POSTGRES_PASSWORD` | none, required | Its password. |
+| `POSTGRES_DB` | none, required | Database created on first start. |
+| `POSTGRES_PORT` | `5432` | Port on this machine. Change it if another Postgres already uses 5432. |
+
+The user, password and database are only applied when the data volume is first created. To change
+them later, run `docker compose down -v`, which **deletes the local database**, then `make up`.
+
+`cmd/migrate` (`make migrate-up` and the other migration targets) reads the same `DATABASE_URL`,
+plus `LOG_LEVEL` and `LOG_FORMAT`.
+
+`TEST_DATABASE_URL` is optional and read only by tests (through `pgtest`). When it isn't set, the
+tests that need Postgres start their own container with Testcontainers, so nothing needs to be
+configured; that is what CI does. Set it to use an existing server instead, e.g. when Docker is
+slow or missing. The tests create their own databases on that server, named `test_` plus random
+letters, and drop them when they finish, so the user needs permission to create databases (the
+Compose user has it). The database named in the URL is never changed, so it can be the same as
+`DATABASE_URL`. Neither the app nor the tests read `.env`.
 
 ## HTTP server
 

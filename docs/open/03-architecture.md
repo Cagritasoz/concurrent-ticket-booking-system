@@ -7,18 +7,30 @@
 ```
 .
 ├── cmd/
-│   └── ticketing/main.go            # composition root: config → logger → router → listener → http.Server; graceful shutdown
+│   ├── ticketing/main.go            # composition root: config → logger → Postgres pool → router → listener → http.Server; graceful shutdown
+│   └── migrate/main.go              # migration command: up, down, version, force
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
+│   ├── event/                       # MODULE: venues so far; halls and sections have tables, layouts also queries (events, tiers, tickets later in M1)
+│   │   ├── venue.go                 # Venue (the module's own type), VenueStatus, the venue errors, row → Venue
+│   │   ├── errors.go                # ErrVersionMismatch, shared by every versioned object of the module
+│   │   ├── venue_input.go           # VenueInput, its validation, ValidationError / FieldError
+│   │   ├── venue_service.go         # VenueService (Get, Create, List by status in keyset pages, Update in a locked transaction, Archive, Restore, Delete; every change checks the version) on top of the generated queries
+│   │   ├── queries/                 # the SQL sqlc reads: venues.sql, layouts.sql
+│   │   └── eventdb/                 # sqlc-generated (db.go, models.go with Venue, Hall, Layout, Section; venues.sql.go, layouts.sql.go) + hand-written tests
 │   ├── platform/
+│   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
+│   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
-│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness
+│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, strict JSON decoding, JSON Merge Patch (patch.go), ETag and If-Match (etag.go), Problem Details errors
+├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), one per table, embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation
-├── docker-compose.yaml              # Redis + redis-commander (used by the examples)
-├── Makefile                         # short commands: make test, make lint, make check, ...
+├── sqlc.yaml                        # sqlc settings: schema from migrations/, queries per module, Go types
+├── docker-compose.yaml              # Postgres; Redis + redis-commander (used by the examples)
+├── Makefile                         # short commands: make test, make lint, make check, make generate, ...
 ├── .golangci.yml                    # golangci-lint configuration
-├── .github/workflows/ci.yaml        # GitHub Actions: lint, test, build
+├── .github/workflows/ci.yaml        # GitHub Actions: lint, sqlc diff, test, migrations, build
 ├── .gitattributes                   # keeps Go files LF on Windows
 ├── .env.example                     # documented example configuration
 └── go.mod / go.sum
@@ -31,17 +43,20 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 ```
 .
 ├── cmd/
-│   └── ticketing/main.go            # composition root: config → clients → modules → HTTP server + workers; graceful shutdown
+│   ├── ticketing/main.go            # composition root: config → clients → modules → HTTP server + workers; graceful shutdown
+│   └── migrate/main.go              # migration command
 ├── internal/
 │   ├── config/                      # env vars → typed Config + Validate()
 │   ├── platform/                    # infrastructure client setup ONLY, no business rules
-│   │   ├── postgres/                # (planned, M1) pgxpool, WithTx helper, pg error mapping (23505 → domain error)
-│   │   │   └── pgtest/              # (planned, M1) Testcontainers Postgres + migrations for integration tests
+│   │   ├── postgres/                # pgxpool, Migrator, WithTx, constraint error checks (e.g. IsUniqueViolation)
+│   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL), optionally migrated
 │   │   ├── redis/                   # (planned, M5) client constructor (returns an error, never exits)
 │   │   ├── elastic/                 # (planned, M8) client constructor
 │   │   └── telemetry/               # slog setup, request IDs; Prometheus registry later (M9)
 │   ├── auth/                        # (planned, M2) OIDC verifier, Principal{Subject, Roles}, ctx helpers (no Gin)
-│   ├── event/                       # (planned, M1) MODULE: venues, events, price tiers, tickets
+│   ├── org/                         # (planned, M2) MODULE: organizations (venue operators, organizers), memberships, venue access grants
+│   ├── event/                       # MODULE: venues, halls, layouts, sections, seats, events, price tiers, tickets (venue service done; the rest M1)
+│   │   ├── venue.go venue_service.go ...  # the module's types, errors and services
 │   │   ├── queries/*.sql
 │   │   └── eventdb/                 # sqlc-generated
 │   ├── booking/                     # (planned, M3–M7) MODULE: holds, bookings, idempotency, payments, webhooks, reconciliation
@@ -53,9 +68,10 @@ Folders marked *(planned)* don't exist yet; the milestone that adds them is in b
 │   │   └── stripepay/               # PaymentGateway implementation (stripe-go) + webhook signature verification
 │   ├── search/                      # (planned, M8) MODULE: mapping, outbox consumer, queries, alias-swap rebuild
 │   └── httpapi/                     # Gin: router, middleware, handlers, error → status mapping, health
+├── web/                             # (planned, after M2) the frontend: TypeScript + React, admin and customer UI
 ├── examples/                        # early learning code, not part of the app
-├── migrations/                      # (planned, M1) golang-migrate files
-├── sqlc.yaml                        # (planned, M1)
+├── migrations/                      # golang-migrate files, shared by all modules (one schema history)
+├── sqlc.yaml
 ├── dev/keycloak/realm.json          # (planned, M2)
 ├── loadtest/                        # (planned, M9) k6 scripts
 ├── docs/open/                       # documentation

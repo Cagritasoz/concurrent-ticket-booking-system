@@ -15,11 +15,14 @@ func fakeEnv(vars map[string]string) LookupFunc {
 	}
 }
 
-// No environment variables given, defaults must be used.
+// testDatabaseURL is a valid value for the one variable that has no default.
+const testDatabaseURL = "postgres://user:s3cret-test-password@localhost:5432/ticketing"
+
+// Only the required variable given, defaults must be used for the rest.
 func TestLoad_Defaults(t *testing.T) {
-	cfg, err := Load(fakeEnv(nil))
+	cfg, err := Load(fakeEnv(map[string]string{"DATABASE_URL": testDatabaseURL}))
 	if err != nil {
-		t.Fatalf("Load with no variables set: unexpected error: %v", err)
+		t.Fatalf("Load with only the required variable set: unexpected error: %v", err)
 	}
 
 	want := Config{
@@ -30,6 +33,7 @@ func TestLoad_Defaults(t *testing.T) {
 			WriteTimeout:      15 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		},
+		Database: DatabaseConfig{URL: testDatabaseURL},
 		Log: LogConfig{
 			Level:  "info",
 			Format: "json",
@@ -45,6 +49,7 @@ func TestLoad_Defaults(t *testing.T) {
 
 func TestLoad_Overrides(t *testing.T) {
 	cfg, err := Load(fakeEnv(map[string]string{
+		"DATABASE_URL":             testDatabaseURL,
 		"HTTP_ADDR":                "127.0.0.1:9090",
 		"HTTP_READ_HEADER_TIMEOUT": "2s",
 		"HTTP_READ_TIMEOUT":        "10s",
@@ -66,6 +71,7 @@ func TestLoad_Overrides(t *testing.T) {
 			WriteTimeout:      30 * time.Second,
 			IdleTimeout:       2 * time.Minute,
 		},
+		Database:        DatabaseConfig{URL: testDatabaseURL},
 		Log:             LogConfig{Level: "debug", Format: "text"},
 		ShutdownTimeout: 500 * time.Millisecond,
 	}
@@ -75,7 +81,7 @@ func TestLoad_Overrides(t *testing.T) {
 }
 
 func TestLoad_EmptyValueUsesDefault(t *testing.T) {
-	cfg, err := Load(fakeEnv(map[string]string{"HTTP_ADDR": "", "HTTP_READ_TIMEOUT": ""}))
+	cfg, err := Load(fakeEnv(map[string]string{"DATABASE_URL": testDatabaseURL, "HTTP_ADDR": "", "HTTP_READ_TIMEOUT": ""}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,6 +108,9 @@ func TestLoad_Invalid(t *testing.T) {
 		{"unknown log level", map[string]string{"LOG_LEVEL": "verbose"}, "LOG_LEVEL"},
 		{"log level is case sensitive", map[string]string{"LOG_LEVEL": "INFO"}, "LOG_LEVEL"},
 		{"unknown log format", map[string]string{"LOG_FORMAT": "xml"}, "LOG_FORMAT"},
+		{"database URL missing", nil, "DATABASE_URL is required"},
+		{"database URL empty", map[string]string{"DATABASE_URL": ""}, "DATABASE_URL is required"},
+		{"database URL wrong scheme", map[string]string{"DATABASE_URL": "mysql://localhost/db"}, "DATABASE_URL must start with"},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +124,16 @@ func TestLoad_Invalid(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoad_InvalidDatabaseURLIsNotPrintedInTheError(t *testing.T) {
+	_, err := Load(fakeEnv(map[string]string{"DATABASE_URL": "mysql://user:s3cret-test-password@localhost/db"}))
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if strings.Contains(err.Error(), "s3cret-test-password") {
+		t.Errorf("error contains the password: %v", err)
 	}
 }
 

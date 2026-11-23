@@ -17,8 +17,16 @@ import (
 	"syscall"
 	"time"
 
+	// The time zone database, embedded into the binary (about 450 KB). event checks venue time
+	// zones with time.LoadLocation, which otherwise needs the operating system's copy: Windows
+	// and minimal container images have none. The _ imports the package only for this side
+	// effect; nothing in it is called.
+	_ "time/tzdata"
+
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/config"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/event"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres"
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/telemetry"
 )
 
@@ -69,8 +77,26 @@ func run(ctx context.Context) error {
 		"log_level", cfg.Log.Level,
 		"log_format", cfg.Log.Format,
 	)
+
+	// Connect before opening the port, so the app never accepts requests it can't serve.
+	// Deferred calls run in reverse order, so the pool closes after the HTTP server further down:
+	// requests that are still finishing can use it until the end.
+	pool, err := postgres.NewPool(ctx, cfg.Database.URL)
+	if err != nil {
+		return fmt.Errorf("connect to postgres: %w", err)
+	}
+	defer pool.Close()
+	logger.Info("connected to postgres",
+		"host", pool.Config().ConnConfig.Host,
+		"database", pool.Config().ConnConfig.Database,
+	)
+
+	// The services, created once and shared by every request. This is the hand-written version of
+	// what Spring's ApplicationContext does with @Service beans and @Autowired.
+	venues := event.NewVenueService(pool)
+
 	readiness := &httpapi.Readiness{} // Set to false as its zero value.
-	router := httpapi.NewRouter(logger, readiness)
+	router := httpapi.NewRouter(logger, readiness, pool, venues)
 
 	// Open the port first, then mark the app ready: /readyz only says "ready" once we can
 	// actually accept connections.
@@ -109,15 +135,17 @@ func serve(
 
 	// Serve blocks until the server stops, so it runs in its own goroutine. That leaves run free
 	// to wait for whichever comes first: the server failing, or a shutdown request.
-	// The channel has room for one value, so the goroutine can always send and exit, even if
-	// nobody is receiving anymore (an unbuffered channel would leave it stuck forever).
-	// A channel is a communication mechanism that lets goroutines send and receive values.
-	// A channel is a typed communication pipe.
-	// "receiver" <- "sender", a channel can be the receiver or the sender.
-	// The 1 means the channel can hold one value without requiring an immediate receiver.
-	serveErr := make(chan error, 1) // Create a channel that carries errors and is buffered with a size of 1.
+	//
+	// A channel is a typed pipe between goroutines; this one carries error values. The arrow
+	// shows which way a value moves: ch <- v sends v into ch, and v := <-ch takes a value out.
+	// The 1 is the buffer size: the channel can hold one value nobody has received yet, so the
+	// goroutine can always send and exit, even if nobody is receiving anymore (with an unbuffered
+	// channel the send would wait for a receiver, forever).
+	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- server.Serve(listener) // send serve error to the serveErr channel if there is one.
+		// Serve always returns an error when it stops: http.ErrServerClosed after Shutdown,
+		// anything else if it failed. Either way it is sent to serveErr.
+		serveErr <- server.Serve(listener)
 	}()
 
 	readiness.SetReady(true)
@@ -126,11 +154,11 @@ func serve(
 	// select waits on several channels at once and runs the case that is ready first.
 	// Block until either the server sends a result into serveErr or the application context is canceled.
 	select {
-	case err := <-serveErr:
+	case err := <-serveErr: // receives Serve's error
 		// Serve stopped on its own, without a shutdown request: something is wrong.
-		return fmt.Errorf("http server: %w", err) // receive error from channel.
-	case <-ctx.Done():
-		logger.Info("shutdown started") // receive and discard the value.
+		return fmt.Errorf("http server: %w", err)
+	case <-ctx.Done(): // Done is closed on cancel; the received value carries nothing and is dropped
+		logger.Info("shutdown started")
 	}
 
 	return shutdown(ctx, server, serveErr, readiness, shutdownTimeout, logger)
@@ -142,7 +170,7 @@ func serve(
 func shutdown(
 	ctx context.Context,
 	server *http.Server,
-	serveErr <-chan error, // receive only
+	serveErr <-chan error, // receive-only: shutdown can take values out of it, never send
 	readiness *httpapi.Readiness,
 	timeout time.Duration,
 	logger *slog.Logger,
@@ -172,7 +200,8 @@ func shutdown(
 	return nil
 }
 
-// newHTTPServer wraps the router in a standard http.Server with timeouts.
+// newHTTPServer wraps the router in a standard http.Server with timeouts. The server accepts any
+// http.Handler as the router: Gin here, or the standard library's http.ServeMux without Gin.
 //
 // Gin's own router.Run() starts a server with no timeouts at all, so one slow or malicious
 // client could hold a connection (and its goroutine) open forever. Each timeout below limits
@@ -180,7 +209,7 @@ func shutdown(
 func newHTTPServer(cfg config.HTTPConfig, handler http.Handler, logger *slog.Logger) *http.Server {
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           handler, // *gin.Engine is passed as handler, which has the required Handler interfaces ServeHttp func.
+		Handler:           handler, // the *gin.Engine: it has a ServeHTTP method, so it is an http.Handler
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,

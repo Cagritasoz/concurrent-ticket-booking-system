@@ -12,19 +12,74 @@ import (
 	"time"
 
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/httpapi"
+	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres/pgtest"
 )
 
 // These tests call run directly, the way main does. t.Setenv sets an environment variable for
 // this test only and restores the old value afterwards. Port 0 asks the operating system for any
 // free port, so the tests never clash with an app already running on 8080.
 
+// TestMain runs the tests of this package and removes pgtest's Postgres container afterwards.
+func TestMain(m *testing.M) { pgtest.Main(m) }
+
+// requireDatabase points run at a fresh, empty database of its own (see pgtest). The app doesn't
+// need tables yet: it only connects and pings.
+func requireDatabase(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", pgtest.NewDatabase(t))
+}
+
+// closedAddr returns an address on this machine where nothing is listening.
+func closedAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return addr
+}
+
+// waitUntilReady polls /readyz until it answers 200.
+func waitUntilReady(t *testing.T, addr string, done <-chan error) {
+	t.Helper()
+	client := &http.Client{Timeout: time.Second}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("run stopped before it was ready: %v", err)
+		default:
+		}
+
+		resp, err := client.Get("http://" + addr + "/readyz")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("/readyz did not answer 200 within 10s")
+}
+
 func TestRun_ReturnsNilAfterShutdown(t *testing.T) {
-	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	requireDatabase(t)
+	addr := closedAddr(t)
+	t.Setenv("HTTP_ADDR", addr)
 	t.Setenv("LOG_LEVEL", "error") // keep the test output quiet
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- run(ctx) }()
+
+	// The whole app is up: connected to Postgres, listening and answering requests.
+	waitUntilReady(t, addr, done)
 
 	cancel() // what Ctrl+C does in main
 
@@ -38,7 +93,32 @@ func TestRun_ReturnsNilAfterShutdown(t *testing.T) {
 	}
 }
 
+func TestRun_FailsWithoutDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+
+	err := run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required") {
+		t.Fatalf("expected a missing DATABASE_URL error, got %v", err)
+	}
+}
+
+func TestRun_FailsWhenDatabaseIsUnreachable(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:s3cret-test-password@"+closedAddr(t)+"/db?sslmode=disable")
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("LOG_LEVEL", "error")
+
+	err := run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "connect to postgres") {
+		t.Fatalf("expected a connection error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "s3cret-test-password") {
+		t.Errorf("error contains the password: %v", err)
+	}
+}
+
 func TestRun_FailsWhenPortIsTaken(t *testing.T) {
+	requireDatabase(t)
+
 	// Occupy a port first, then ask run to listen on the same one.
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -77,13 +157,13 @@ func newSlowServer(t *testing.T) *slowServer {
 
 	s := &slowServer{
 		listener: listener,
-		started:  make(chan struct{}), // empty struct to mean that event matters not the type.
+		started:  make(chan struct{}), // struct{} carries no data: only the close matters, as a signal
 		release:  make(chan struct{}),
 		shutdown: make(chan struct{}),
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(s.started) // close started channel
-		<-s.release      // Wait for "release" channel to be closed.
+		close(s.started) // wakes everyone waiting on <-s.started: the request has arrived
+		<-s.release      // blocks until the test closes release
 		_, _ = io.WriteString(w, "done")
 	})
 	s.server = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
@@ -104,7 +184,7 @@ type response struct {
 
 // sendRequest sends a GET in the background and delivers the result on the returned channel.
 func (s *slowServer) sendRequest() <-chan response {
-	result := make(chan response, 1) // channel that uses the response struct.
+	result := make(chan response, 1) // room for one, so the goroutine's send never blocks
 	go func() {
 		client := &http.Client{Timeout: 5 * time.Second}
 		// The address decides which server is reached: the listener knows the real port the

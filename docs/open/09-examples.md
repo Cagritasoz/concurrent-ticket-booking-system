@@ -12,7 +12,7 @@ imported by it, and its tests are not part of the regular test runs.
 | `examples/booking/concurrent_store.go` | `ConcurrentStore`: the same map guarded by a `sync.RWMutex`. |
 | `examples/booking/redis_store.go` | `RedisStore`: seat holds with `SET NX` and a TTL, plus a session → seat reverse lookup. |
 | `examples/adapters/redis/redis.go` | A Redis client constructor. |
-| `examples/booking/service_test.go` | 10,000 goroutines try to book one seat; exactly one must win. Needs Redis from `docker compose up -d`. |
+| `examples/booking/service_test.go` | 10,000 goroutines try to book one seat; exactly one must win. Needs Redis from `docker compose up -d redis redis-commander`. |
 
 ## Lessons the real implementation must not repeat
 

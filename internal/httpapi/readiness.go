@@ -1,12 +1,22 @@
 package httpapi
 
-import "sync/atomic"
+import (
+	"context"
+	"sync/atomic"
+)
 
-// Readiness tracks whether the application can take traffic right now.
+// Pinger checks that a dependency can be reached. *pgxpool.Pool satisfies it without saying so:
+// in Go, a type implements an interface just by having its methods, so there is no "implements".
+// The interface lives here, in the package that uses it, and lets tests pass a fake database.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// Readiness tracks whether the application itself can take traffic right now.
 //
-// It starts as "not ready". main marks it ready once the server is listening, and (from step 5)
-// marks it not ready again when shutdown begins, so load balancers stop sending new requests.
-// In M1, checks such as "can we reach Postgres?" are added here.
+// It starts as "not ready". run marks it ready once the server is listening, and marks it not
+// ready again when shutdown begins, so load balancers stop sending new requests.
+// Whether Postgres can be reached is checked separately, on each /readyz request (see readyz).
 //
 // The zero value is ready to use, like sync.Mutex: no constructor needed.
 type Readiness struct {

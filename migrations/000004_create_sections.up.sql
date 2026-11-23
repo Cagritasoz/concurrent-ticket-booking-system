@@ -16,8 +16,13 @@ CREATE TABLE sections (
     -- How many people a standing section holds. A seated section holds as many as it has seats,
     -- so it has no capacity of its own (sections_capacity_only_standing below).
     capacity    integer               CHECK (capacity > 0),
+    -- Where the section comes in its layout's list (1 first): "Table 2" before "Table 10", and
+    -- the stalls before the balcony, which sorting by name gets wrong. The service gives a new
+    -- section the next number. Not unique, so sections can be reordered one at a time without a
+    -- clash in between; sections with the same position are listed by name.
+    position    integer      NOT NULL CHECK (position > 0),
 
-    version     integer      NOT NULL DEFAULT 1 CHECK (version > 0),
+    version    integer      NOT NULL DEFAULT 1 CHECK (version > 0),
 
     created_at  timestamptz  NOT NULL DEFAULT now(),
     updated_at  timestamptz  NOT NULL DEFAULT now(),
@@ -31,5 +36,6 @@ CREATE TABLE sections (
 
 -- Two sections of one layout can't share a name, ignoring case: a ticket names its section.
 -- Sections have no status, so this index covers every section and also finds a layout's
--- sections, for the foreign key and the list.
+-- sections, for the foreign key and the list (a layout has few sections, so sorting them by
+-- position needs no index of its own).
 CREATE UNIQUE INDEX sections_layout_id_name_key ON sections (layout_id, lower(name));

@@ -2,7 +2,8 @@
 -- setup". A hall is in one layout at a time; every event takes place in one layout (migration 7).
 -- Its capacity isn't stored: it is the sum of its sections' seats and standing capacities.
 --
--- A layout that a published event uses is frozen: its sections and seats can't change, so the
+-- A layout that a confirmed event uses is frozen (an event confirmed, announced or cancelled:
+-- the venue agreed to that setup, migration 7): its sections and seats can't change, so the
 -- event's tickets keep describing the room as it was sold. "Frozen" is worked out from the
 -- events, not stored. To change a frozen layout, an admin copies it (M1 step 11).
 CREATE TABLE layouts (

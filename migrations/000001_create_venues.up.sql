@@ -2,7 +2,9 @@
 -- table per migration: its rooms (halls, 2), their setups (layouts, 3), their parts (sections, 4)
 -- and the seats of seated sections (seats, 5). Event series (6) group events (7), which take
 -- place in a layout and sell tickets in ticket tiers (8) to ticket types (9), at the prices of
--- tier_prices (10), with admin holds (11) and the tickets themselves (12).
+-- tier_prices (10), with admin holds (11) and the tickets themselves (12). Passes (13) sell one
+-- ticket in each of several events of a series, at their prices (14), from the tiers named for
+-- each covered event (15).
 --
 -- Optional columns allow NULL but reject empty or blank text: a CHECK passes when its expression is
 -- NULL, so the same check works for required columns (with NOT NULL) and optional ones (without).

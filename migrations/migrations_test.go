@@ -306,11 +306,11 @@ func validLayout(hallID string) row {
 }
 
 func validSection(layoutID string) row {
-	return row{"layout_id": layoutID, "name": "Floor", "kind": "standing", "capacity": 3000}
+	return row{"layout_id": layoutID, "name": "Floor", "kind": "standing", "capacity": 3000, "position": 1}
 }
 
 func validSeatedSection(layoutID string) row {
-	return row{"layout_id": layoutID, "name": "Block 101", "kind": "seated"}
+	return row{"layout_id": layoutID, "name": "Block 101", "kind": "seated", "position": 1}
 }
 
 func validSeat(sectionID string) row {
@@ -337,6 +337,24 @@ func validEvent(tr tree) row {
 	return eventOn(tr, 14)
 }
 
+// submitted, confirmed, announced and cancelled move an event row along its lifecycle, setting
+// the status and every time the status needs, in January 2027, before the events of the tests.
+func submitted(r row) row {
+	return r.with("status", "submitted").with("submitted_at", "2027-01-05T12:00:00Z")
+}
+
+func confirmed(r row) row {
+	return submitted(r).with("status", "confirmed").with("confirmed_at", "2027-01-07T12:00:00Z")
+}
+
+func announced(r row) row {
+	return confirmed(r).with("status", "announced").with("announced_at", "2027-01-10T12:00:00Z")
+}
+
+func cancelled(r row) row {
+	return announced(r).with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z")
+}
+
 func validSeries() row {
 	return row{"name": "Hamlet, spring 2027"}
 }
@@ -355,6 +373,14 @@ func validPrice(tierID, ticketTypeID, eventID string) row {
 
 func validHold(eventID string) row {
 	return row{"event_id": eventID, "name": "Artist guests", "reason": "artist"}
+}
+
+func validPass(seriesID string) row {
+	return row{"series_id": seriesID, "name": "3-day pass", "kind": "standing", "currency": "TRY"}
+}
+
+func validPassPrice(passID string) row {
+	return row{"pass_id": passID, "name": "Adult", "price_amount": 130000}
 }
 
 // unknownID is a well-formed id that no row has.
@@ -435,6 +461,9 @@ func TestSections_TableRules(t *testing.T) {
 		{"missing layout", validSection(layoutID).with("layout_id", nil), notNullViolation},
 		{"unknown layout", validSection(layoutID).with("layout_id", unknownID), foreignKeyViolation},
 		{"a later version", validSection(layoutID).with("name", "Standing left").with("version", 2), ""},
+		{"same position as another section", validSection(layoutID).with("name", "Standing right"), ""},
+		{"missing position", validSection(layoutID).with("position", nil), notNullViolation},
+		{"zero position", validSection(layoutID).with("position", 0), checkViolation},
 		{"zero version", validSection(layoutID).with("version", 0), checkViolation},
 		{"a status", validSection(layoutID).with("status", "active"), undefinedColumn},
 	}
@@ -468,6 +497,7 @@ func TestSeats_TableRules(t *testing.T) {
 			with("restricted_view", true).
 			with("view_note", "Pillar on the left").
 			with("aisle", true).
+			with("physical_seat_key", unknownID).
 			with("version", 4), ""},
 		{"companion seat", seat().with("type", "companion"), ""},
 		{"in a standing section", seat().with("section_id", standingID), foreignKeyViolation},
@@ -481,6 +511,7 @@ func TestSeats_TableRules(t *testing.T) {
 		{"unknown type", seat().with("type", "vip"), checkViolation},
 		{"view note without a restricted view", seat().with("view_note", "Pillar"), checkViolation},
 		{"empty view note", seat().with("restricted_view", true).with("view_note", ""), checkViolation},
+		{"missing physical seat key", seat().with("physical_seat_key", nil), notNullViolation},
 		{"zero version", seat().with("version", 0), checkViolation},
 	}
 	for _, tc := range tests {
@@ -524,6 +555,34 @@ func TestASectionWithSeatsCannotBecomeStanding(t *testing.T) {
 	}
 	if _, err := conn.Exec(t.Context(), toStanding, empty); err != nil {
 		t.Errorf("section without seats: %v", err)
+	}
+}
+
+// Every new seat is a new physical seat with its own key. A layout copy (M1 step 11) gives its
+// seats the keys of the seats they were copied from, so the same key can be in several layouts.
+func TestSeatsShareAPhysicalSeatKeyOnlyWhenCopied(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	tr := newTree(t, conn) // its seat is row A, seat 1
+	other := mustInsert(t, conn, "seats", validSeat(tr.section).with("seat_label", "2").with("seat_position", 2))
+
+	key := func(seatID string) string {
+		t.Helper()
+		var k string
+		if err := conn.QueryRow(t.Context(), `SELECT physical_seat_key::text FROM seats WHERE id = $1`, seatID).Scan(&k); err != nil {
+			t.Fatalf("select key: %v", err)
+		}
+		return k
+	}
+	if key(tr.seat) == key(other) {
+		t.Errorf("two new seats got the same physical seat key %s", key(tr.seat))
+	}
+
+	// The copy: the same hall, a second layout, the same seat with the original's key.
+	copyLayout := mustInsert(t, conn, "layouts", validLayout(tr.hall).with("name", "Theater v2"))
+	copySection := mustInsert(t, conn, "sections", validSeatedSection(copyLayout))
+	copied := mustInsert(t, conn, "seats", validSeat(copySection).with("physical_seat_key", key(tr.seat)))
+	if key(copied) != key(tr.seat) {
+		t.Errorf("copied seat has key %s, want the original's %s", key(copied), key(tr.seat))
 	}
 }
 
@@ -583,21 +642,26 @@ func TestEvents_TableRules(t *testing.T) {
 		day++
 		return eventOn(tr, day)
 	}
-	published := func() row {
-		return event().with("status", "published").with("published_at", "2027-01-10T12:00:00Z")
-	}
 	// at is a time on the day of the event made last.
 	at := func(hour, minute int) string { return eventTime(day, hour, minute) }
 
 	tests := []ruleCase{
 		{"required columns only", event(), ""},
-		{"every column", published().
+		{"submitted", submitted(event()), ""},
+		{"confirmed", confirmed(event()), ""},
+		{"every column", announced(event()).
 			with("series_id", seriesID).
 			with("description", "The album tour, with guests.").
 			with("doors_open_at", at(18, 30)).
+			with("hall_reserved_from", at(12, 0)).
+			with("hall_reserved_until", at(23, 59)).
 			with("on_sale_at", "2027-01-15T10:00:00Z").
+			with("off_sale_at", at(18, 0)).
+			with("per_customer_limit", 6).
+			with("rescheduled_at", "2027-01-20T09:00:00Z").
 			with("version", 3), ""},
-		{"cancelled", published().with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), ""},
+		{"cancelled", cancelled(event()), ""},
+		{"declined, back to draft", event().with("decline_reason", "The hall is booked for maintenance."), ""},
 		{"unknown layout", event().with("layout_id", unknownID), foreignKeyViolation},
 		{"hall of another layout", event().with("hall_id", other.hall), foreignKeyViolation},
 		{"unknown series", event().with("series_id", unknownID), foreignKeyViolation},
@@ -611,15 +675,38 @@ func TestEvents_TableRules(t *testing.T) {
 		{"doors open after the start", event().with("doors_open_at", at(20, 30)), checkViolation},
 		{"on sale at the start", event().with("on_sale_at", at(20, 0)), checkViolation},
 		{"on sale after the start", event().with("on_sale_at", at(21, 0)), checkViolation},
+		{"hall reserved from the start, no door time", event().with("hall_reserved_from", at(20, 0)), ""},
+		{"hall reserved from after the start", event().with("hall_reserved_from", at(20, 30)), checkViolation},
+		{"hall reserved from after the doors open", event().with("doors_open_at", at(18, 30)).with("hall_reserved_from", at(19, 0)), checkViolation},
+		{"hall reserved until the end", event().with("hall_reserved_until", at(23, 0)), ""},
+		{"hall reserved until before the end", event().with("hall_reserved_until", at(22, 0)), checkViolation},
+		{"off sale after the start, for late entry", event().with("off_sale_at", at(20, 15)), ""},
+		{"off sale at the end", event().with("off_sale_at", at(23, 0)), ""},
+		{"off sale after the end", event().with("off_sale_at", at(23, 30)), checkViolation},
+		{"off sale when it goes on sale", event().with("on_sale_at", at(10, 0)).with("off_sale_at", at(10, 0)), checkViolation},
+		{"off sale before it goes on sale", event().with("on_sale_at", at(10, 0)).with("off_sale_at", at(9, 0)), checkViolation},
 		{"lowercase currency", event().with("currency", "try"), checkViolation},
 		{"missing currency", event().with("currency", nil), notNullViolation},
-		{"unknown status", event().with("status", "completed"), checkViolation},
-		{"draft with a publish time", event().with("published_at", "2027-01-10T12:00:00Z"), checkViolation},
-		{"published without a publish time", event().with("status", "published"), checkViolation},
-		{"cancelled without a cancel time", published().with("status", "cancelled"), checkViolation},
-		{"cancel time on a published event", published().with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
-		{"cancelled before it was published", published().with("status", "cancelled").with("cancelled_at", "2027-01-01T00:00:00Z"), checkViolation},
+		{"unknown status", event().with("status", "published"), checkViolation},
+		{"draft with a submit time", event().with("submitted_at", "2027-01-05T12:00:00Z"), checkViolation},
+		{"submitted without a submit time", event().with("status", "submitted"), checkViolation},
+		{"submitted with a confirm time", submitted(event()).with("confirmed_at", "2027-01-07T12:00:00Z"), checkViolation},
+		{"confirmed without a confirm time", submitted(event()).with("status", "confirmed"), checkViolation},
+		{"confirmed with an announce time", confirmed(event()).with("announced_at", "2027-01-10T12:00:00Z"), checkViolation},
+		{"announced without an announce time", confirmed(event()).with("status", "announced"), checkViolation},
+		{"confirmed before it was submitted", confirmed(event()).with("confirmed_at", "2027-01-01T00:00:00Z"), checkViolation},
+		{"announced before it was confirmed", announced(event()).with("announced_at", "2027-01-06T00:00:00Z"), checkViolation},
+		{"cancelled without a cancel time", announced(event()).with("status", "cancelled"), checkViolation},
+		{"cancel time on an announced event", announced(event()).with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
+		{"cancelled before it was announced", cancelled(event()).with("cancelled_at", "2027-01-08T00:00:00Z"), checkViolation},
+		{"cancelled without being announced", confirmed(event()).with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
 		{"cancelled draft", event().with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
+		{"decline reason on a submitted event", submitted(event()).with("decline_reason", "Booked."), checkViolation},
+		{"blank decline reason", event().with("decline_reason", " "), checkViolation},
+		{"rescheduled draft", event().with("rescheduled_at", "2027-01-20T09:00:00Z"), checkViolation},
+		{"rescheduled before it was announced", announced(event()).with("rescheduled_at", "2027-01-09T00:00:00Z"), checkViolation},
+		{"rescheduled confirmed event", confirmed(event()).with("rescheduled_at", "2027-01-20T09:00:00Z"), checkViolation},
+		{"zero limit", event().with("per_customer_limit", 0), checkViolation},
 		{"zero version", event().with("version", 0), checkViolation},
 	}
 	for _, tc := range tests {
@@ -629,30 +716,40 @@ func TestEvents_TableRules(t *testing.T) {
 	}
 }
 
-// A hall is set up one way at a time, so its events can't overlap, whichever of its layouts they
-// use. Back to back is fine, other halls are free, and a cancelled event doesn't take the slot.
+// A hall is set up one way at a time, so the events that hold a slot in it (submitted, confirmed
+// or announced) can't overlap, whichever of its layouts they use, counting the time reserved for
+// setting up and clearing. Back to back is fine, other halls are free, and drafts and cancelled
+// events don't take the slot.
 func TestEventsInOneHallCannotOverlap(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 	tr, other := newTree(t, conn), newTree(t, conn)
 	basketball := mustInsert(t, conn, "layouts", validLayout(tr.hall).with("name", "Basketball"))
-	mustInsert(t, conn, "events", eventOn(tr, 1)) // a draft, 20:00 to 23:00 on March 1
-
-	cancelled := eventOn(tr, 1).
-		with("status", "cancelled").
-		with("published_at", "2027-01-10T12:00:00Z").
-		with("cancelled_at", "2027-02-01T09:00:00Z")
+	mustInsert(t, conn, "events", submitted(eventOn(tr, 1))) // 20:00 to 23:00 on March 1
+	// 20:00 to 23:00 on March 3, then cleared until 01:00 on March 4.
+	mustInsert(t, conn, "events", submitted(eventOn(tr, 3)).with("hall_reserved_until", eventTime(4, 1, 0)))
 
 	tests := []struct {
 		name        string
 		event       row
 		wantOverlap bool
 	}{
-		{"same layout, overlapping", eventOn(tr, 1).with("starts_at", eventTime(1, 22, 0)).with("ends_at", eventTime(2, 1, 0)), true},
-		{"same hall, other layout", eventOn(tr, 1).with("layout_id", basketball), true},
-		{"inside the other event", eventOn(tr, 1).with("starts_at", eventTime(1, 21, 0)).with("ends_at", eventTime(1, 22, 0)), true},
-		{"right after it", eventOn(tr, 1).with("starts_at", eventTime(1, 23, 0)).with("ends_at", eventTime(2, 1, 0)), false},
-		{"other hall, same time", eventOn(other, 1), false},
-		{"cancelled, same time", cancelled, false},
+		{"same layout, overlapping", submitted(eventOn(tr, 1).with("starts_at", eventTime(1, 22, 0)).with("ends_at", eventTime(2, 1, 0))), true},
+		{"same hall, other layout", submitted(eventOn(tr, 1).with("layout_id", basketball)), true},
+		{"inside the other event", submitted(eventOn(tr, 1).with("starts_at", eventTime(1, 21, 0)).with("ends_at", eventTime(1, 22, 0))), true},
+		{"confirmed, same time", confirmed(eventOn(tr, 1)), true},
+		{"announced, same time", announced(eventOn(tr, 1)), true},
+		{"its setup overlaps the other event", submitted(eventOn(tr, 1).
+			with("starts_at", eventTime(1, 23, 30)).with("ends_at", eventTime(2, 1, 0)).
+			with("hall_reserved_from", eventTime(1, 22, 30))), true},
+		{"during the other's clearing", submitted(eventOn(tr, 4).
+			with("starts_at", eventTime(4, 0, 30)).with("ends_at", eventTime(4, 2, 0))), true},
+		{"right after the other's clearing", submitted(eventOn(tr, 4).
+			with("starts_at", eventTime(4, 1, 0)).with("ends_at", eventTime(4, 3, 0))), false},
+		{"right after it", submitted(eventOn(tr, 1).with("starts_at", eventTime(1, 23, 0)).with("ends_at", eventTime(2, 1, 0))), false},
+		{"other hall, same time", submitted(eventOn(other, 1)), false},
+		{"draft, same time", eventOn(tr, 1), false},
+		{"another draft, same time", eventOn(tr, 1).with("name", "Duman, second date"), false},
+		{"cancelled, same time", cancelled(eventOn(tr, 1)), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -671,9 +768,19 @@ func TestEventsInOneHallCannotOverlap(t *testing.T) {
 
 	// Moving an event onto a taken slot is refused too, not only inserting one.
 	t.Run("moved onto the slot", func(t *testing.T) {
-		id := mustInsert(t, conn, "events", eventOn(tr, 5))
+		id := mustInsert(t, conn, "events", submitted(eventOn(tr, 5)))
 		_, err := conn.Exec(t.Context(), `UPDATE events SET starts_at = $2, ends_at = $3 WHERE id = $1`,
 			id, eventTime(1, 19, 0), eventTime(1, 21, 0))
+		if !postgres.IsExclusionViolation(err, "events_no_overlap_in_hall") {
+			t.Errorf("got %v, want an events_no_overlap_in_hall violation", err)
+		}
+	})
+
+	// A draft can be on a taken date; submitting it is what claims the slot, so that is refused.
+	t.Run("submitting a draft into a taken slot", func(t *testing.T) {
+		id := mustInsert(t, conn, "events", eventOn(tr, 1).with("name", "Duman, third date"))
+		_, err := conn.Exec(t.Context(),
+			`UPDATE events SET status = 'submitted', submitted_at = now() WHERE id = $1`, id)
 		if !postgres.IsExclusionViolation(err, "events_no_overlap_in_hall") {
 			t.Errorf("got %v, want an events_no_overlap_in_hall violation", err)
 		}
@@ -706,7 +813,7 @@ func TestAnEventKeepsItsLayoutHallAndVenue(t *testing.T) {
 	}
 }
 
-// sales is one published event in a tree's layout, which also has a standing section, with a
+// sales is one announced event in a tree's layout, which also has a standing section, with a
 // seated and a standing tier, an "Adult" ticket type and an admin hold: what prices and tickets
 // need.
 type sales struct {
@@ -718,8 +825,7 @@ func newSales(t *testing.T, conn *pgx.Conn) sales {
 	t.Helper()
 	s := sales{tree: newTree(t, conn)}
 	s.standingSection = mustInsert(t, conn, "sections", validSection(s.layout))
-	s.event = mustInsert(t, conn, "events", validEvent(s.tree).
-		with("status", "published").with("published_at", "2027-01-10T12:00:00Z"))
+	s.event = mustInsert(t, conn, "events", announced(validEvent(s.tree)))
 	s.seatedTier = mustInsert(t, conn, "ticket_tiers", validTier(s.event, "seated"))
 	s.standingTier = mustInsert(t, conn, "ticket_tiers", validTier(s.event, "standing").with("name", "Floor"))
 	s.ticketType = mustInsert(t, conn, "ticket_types", validTicketType(s.event))
@@ -759,8 +865,17 @@ func TestTicketTiers_TableRules(t *testing.T) {
 		{"every column", tier("seated").
 			with("description", "Includes a drink and early entry.").
 			with("per_customer_limit", 4).
+			with("sold_via", "shared").
 			with("version", 2), ""},
+		{"only through passes", tier("standing").with("sold_via", "pass_only"), ""},
+		{"boxes sold whole", tier("seated").with("sold_as", "section"), ""},
+		{"a standing box sold whole", tier("standing").with("sold_as", "section"), ""},
+		{"sold whole through passes", tier("seated").with("sold_as", "section").with("sold_via", "pass_only"), checkViolation},
+		{"sold whole, shared with passes", tier("seated").with("sold_as", "section").with("sold_via", "shared"), checkViolation},
 		{"unknown event", tier("seated").with("event_id", unknownID), foreignKeyViolation},
+		{"unknown sold_as", tier("seated").with("sold_as", "row"), checkViolation},
+		{"unknown sold_via", tier("seated").with("sold_via", "resale"), checkViolation},
+		{"missing sold_via", tier("seated").with("sold_via", nil), notNullViolation},
 		{"blank name", tier("seated").with("name", " "), checkViolation},
 		{"name longer than 100", tier("seated").with("name", strings.Repeat("a", 101)), checkViolation},
 		{"empty description", tier("seated").with("description", ""), checkViolation},
@@ -773,6 +888,18 @@ func TestTicketTiers_TableRules(t *testing.T) {
 			checkRule(t, conn, "ticket_tiers", tc)
 		})
 	}
+
+	t.Run("a new tier is sold per seat, on its own", func(t *testing.T) {
+		id := mustInsert(t, conn, "ticket_tiers", validTier(eventID, "seated").with("name", "Defaults"))
+		var soldAs, soldVia string
+		err := conn.QueryRow(t.Context(), `SELECT sold_as, sold_via FROM ticket_tiers WHERE id = $1`, id).Scan(&soldAs, &soldVia)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		if soldAs != "seat" || soldVia != "single" {
+			t.Errorf("sold_as %q, sold_via %q; want seat, single", soldAs, soldVia)
+		}
+	})
 
 	t.Run("name taken in the event, ignoring case", func(t *testing.T) {
 		mustInsert(t, conn, "ticket_tiers", validTier(eventID, "seated").with("name", "VIP"))
@@ -796,7 +923,12 @@ func TestTicketTypes_TableRules(t *testing.T) {
 
 	tests := []ruleCase{
 		{"required columns only", ticketType(), ""},
-		{"every column", ticketType().with("description", "With a valid student ID.").with("version", 2), ""},
+		{"every column", ticketType().
+			with("description", "With a valid student ID.").
+			with("visibility", "admin").
+			with("version", 2), ""},
+		{"unknown visibility", ticketType().with("visibility", "code"), checkViolation},
+		{"missing visibility", ticketType().with("visibility", nil), notNullViolation},
 		{"unknown event", ticketType().with("event_id", unknownID), foreignKeyViolation},
 		{"missing event", ticketType().with("event_id", nil), notNullViolation},
 		{"blank name", ticketType().with("name", " "), checkViolation},
@@ -810,6 +942,11 @@ func TestTicketTypes_TableRules(t *testing.T) {
 		})
 	}
 
+	t.Run("a new type is public", func(t *testing.T) {
+		wantVisibility(t, conn, "ticket_types", mustInsert(t, conn, "ticket_types",
+			validTicketType(eventID).with("name", "Defaults")), "public")
+	})
+
 	t.Run("name taken in the event, ignoring case", func(t *testing.T) {
 		mustInsert(t, conn, "ticket_types", validTicketType(eventID).with("name", "Student"))
 		_, err := insert(t.Context(), conn, "ticket_types", validTicketType(eventID).with("name", "STUDENT"))
@@ -819,7 +956,20 @@ func TestTicketTypes_TableRules(t *testing.T) {
 	})
 }
 
-// A price is what one ticket type costs in one tier: one price per pair, the tier and the type of
+// wantVisibility checks the visibility of the row with the given id. table is a constant of the
+// caller, never input, so building the SQL from it is safe.
+func wantVisibility(t *testing.T, conn *pgx.Conn, table, id, want string) {
+	t.Helper()
+	var got string
+	if err := conn.QueryRow(t.Context(), `SELECT visibility FROM `+table+` WHERE id = $1`, id).Scan(&got); err != nil {
+		t.Fatalf("select visibility: %v", err)
+	}
+	if got != want {
+		t.Errorf("visibility %q, want %q", got, want)
+	}
+}
+
+// A price is what one ticket type costs in one tier:one price per pair, the tier and the type of
 // the same event, and deleting a tier or a type deletes its prices.
 func TestTierPrices(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
@@ -1116,13 +1266,316 @@ func TestArchivedHallsAndLayoutsFreeTheirName(t *testing.T) {
 	}
 }
 
-// New rows start like a new venue: version 1 (tickets have none); halls active, layouts and
-// events as drafts, tickets available.
+// festival is a series of two days in one hall and a standing pass of the series: what
+// pass_events need. Its tiers are sold only through passes, except day 2's single and shared
+// tiers. outside is an event of no series, euro a day of the series in another currency.
+type festival struct {
+	series, pass, day1, day2, outside, euro string
+	day1Standing, day1Seated, day2Standing  string
+	day2Single, day2Shared                  string
+	outsideTier, euroTier                   string
+}
+
+func newFestival(t *testing.T, conn *pgx.Conn) festival {
+	t.Helper()
+	tr := newTree(t, conn)
+	var f festival
+	f.series = mustInsert(t, conn, "event_series", validSeries().with("name", "Festival 2027"))
+	f.pass = mustInsert(t, conn, "passes", validPass(f.series))
+	f.day1 = mustInsert(t, conn, "events", eventOn(tr, 1).with("series_id", f.series))
+	f.day2 = mustInsert(t, conn, "events", eventOn(tr, 2).with("series_id", f.series))
+	f.outside = mustInsert(t, conn, "events", eventOn(tr, 3))
+	f.euro = mustInsert(t, conn, "events", eventOn(tr, 4).with("series_id", f.series).with("currency", "EUR"))
+	passOnly := func(eventID, kind, name string) string {
+		return mustInsert(t, conn, "ticket_tiers", validTier(eventID, kind).with("name", name).with("sold_via", "pass_only"))
+	}
+	f.day1Standing = passOnly(f.day1, "standing", "3-day pass")
+	f.day1Seated = passOnly(f.day1, "seated", "Stand")
+	f.day2Standing = passOnly(f.day2, "standing", "3-day pass")
+	f.outsideTier = passOnly(f.outside, "standing", "3-day pass")
+	f.euroTier = passOnly(f.euro, "standing", "3-day pass")
+	f.day2Single = mustInsert(t, conn, "ticket_tiers", validTier(f.day2, "standing").with("name", "Day ticket"))
+	f.day2Shared = mustInsert(t, conn, "ticket_tiers", validTier(f.day2, "standing").with("name", "Field").with("sold_via", "shared"))
+	return f
+}
+
+// passEvent is the row that makes a standing TRY pass of the festival's series take its ticket
+// in eventID from tierID, a pass_only tier.
+func (f festival) passEvent(passID, eventID, tierID string) row {
+	return row{"pass_id": passID, "event_id": eventID, "tier_id": tierID,
+		"series_id": f.series, "currency": "TRY", "kind": "standing", "tier_sold_via": "pass_only"}
+}
+
+func TestPasses_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	seriesID := mustInsert(t, conn, "event_series", validSeries())
+
+	// Each case gets its own name, since names are unique per series.
+	n := 0
+	pass := func() row {
+		n++
+		return validPass(seriesID).with("name", "Pass "+strconv.Itoa(n))
+	}
+	announcedPass := func() row {
+		return pass().with("status", "announced").with("announced_at", "2027-01-10T12:00:00Z")
+	}
+
+	tests := []ruleCase{
+		{"required columns only", pass(), ""},
+		{"seated, same seat in every event", pass().with("kind", "seated").with("seat_selection", "same_seat"), ""},
+		{"seated, a seat per event", pass().with("kind", "seated").with("seat_selection", "per_event"), ""},
+		{"seated without a seat selection", pass().with("kind", "seated"), checkViolation},
+		{"standing with a seat selection", pass().with("seat_selection", "per_event"), checkViolation},
+		{"unknown seat selection", pass().with("kind", "seated").with("seat_selection", "any"), checkViolation},
+		{"every column", announcedPass().
+			with("description", "Entry on all three days, re-entry allowed.").
+			with("per_customer_limit", 4).
+			with("on_sale_at", "2027-01-15T10:00:00Z").
+			with("version", 2), ""},
+		{"cancelled", announcedPass().with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), ""},
+		{"unknown series", pass().with("series_id", unknownID), foreignKeyViolation},
+		{"missing series", pass().with("series_id", nil), notNullViolation},
+		{"blank name", pass().with("name", " "), checkViolation},
+		{"name longer than 100", pass().with("name", strings.Repeat("a", 101)), checkViolation},
+		{"empty description", pass().with("description", ""), checkViolation},
+		{"unknown kind", pass().with("kind", "mixed"), checkViolation},
+		{"lowercase currency", pass().with("currency", "try"), checkViolation},
+		{"missing currency", pass().with("currency", nil), notNullViolation},
+		{"zero limit", pass().with("per_customer_limit", 0), checkViolation},
+		{"unknown status", pass().with("status", "published"), checkViolation},
+		{"a venue's step", pass().with("status", "confirmed"), checkViolation},
+		{"draft with an announce time", pass().with("announced_at", "2027-01-10T12:00:00Z"), checkViolation},
+		{"announced without an announce time", pass().with("status", "announced"), checkViolation},
+		{"cancelled without a cancel time", announcedPass().with("status", "cancelled"), checkViolation},
+		{"cancelled before it was announced", announcedPass().with("status", "cancelled").with("cancelled_at", "2027-01-01T00:00:00Z"), checkViolation},
+		{"cancelled draft", pass().with("status", "cancelled").with("cancelled_at", "2027-02-01T09:00:00Z"), checkViolation},
+		{"zero version", pass().with("version", 0), checkViolation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "passes", tc)
+		})
+	}
+
+	t.Run("name taken in the series, ignoring case", func(t *testing.T) {
+		mustInsert(t, conn, "passes", validPass(seriesID).with("name", "Weekend"))
+		_, err := insert(t.Context(), conn, "passes", validPass(seriesID).with("name", "WEEKEND"))
+		if !postgres.IsUniqueViolation(err, "passes_series_id_name_key") {
+			t.Errorf("got %v, want a passes_series_id_name_key violation", err)
+		}
+		other := mustInsert(t, conn, "event_series", validSeries())
+		if _, err := insert(t.Context(), conn, "passes", validPass(other).with("name", "Weekend")); err != nil {
+			t.Errorf("same name in another series: got %v, want no error", err)
+		}
+	})
+
+	t.Run("a series with a pass can't be deleted", func(t *testing.T) {
+		_, err := conn.Exec(t.Context(), `DELETE FROM event_series WHERE id = $1`, seriesID)
+		if !postgres.IsForeignKeyViolation(err, "passes_series_id_fkey") {
+			t.Errorf("got %v, want a passes_series_id_fkey violation", err)
+		}
+	})
+}
+
+func TestPassPrices_TableRules(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	passID := mustInsert(t, conn, "passes", validPass(mustInsert(t, conn, "event_series", validSeries())))
+
+	// Each case gets its own name, since names are unique per pass.
+	n := 0
+	price := func() row {
+		n++
+		return validPassPrice(passID).with("name", "Option "+strconv.Itoa(n))
+	}
+
+	tests := []ruleCase{
+		{"required columns only", price(), ""},
+		{"free, every column", price().
+			with("description", "With a valid student ID.").
+			with("price_amount", 0).
+			with("visibility", "admin").
+			with("version", 2), ""},
+		{"unknown pass", price().with("pass_id", unknownID), foreignKeyViolation},
+		{"missing pass", price().with("pass_id", nil), notNullViolation},
+		{"blank name", price().with("name", " "), checkViolation},
+		{"name longer than 100", price().with("name", strings.Repeat("a", 101)), checkViolation},
+		{"empty description", price().with("description", ""), checkViolation},
+		{"missing price", price().with("price_amount", nil), notNullViolation},
+		{"negative price", price().with("price_amount", -1), checkViolation},
+		{"unknown visibility", price().with("visibility", "hidden"), checkViolation},
+		{"missing visibility", price().with("visibility", nil), notNullViolation},
+		{"zero version", price().with("version", 0), checkViolation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			checkRule(t, conn, "pass_prices", tc)
+		})
+	}
+
+	t.Run("a new price option is public", func(t *testing.T) {
+		wantVisibility(t, conn, "pass_prices", mustInsert(t, conn, "pass_prices",
+			validPassPrice(passID).with("name", "Defaults")), "public")
+	})
+
+	t.Run("name taken in the pass, ignoring case", func(t *testing.T) {
+		mustInsert(t, conn, "pass_prices", validPassPrice(passID).with("name", "Student"))
+		_, err := insert(t.Context(), conn, "pass_prices", validPassPrice(passID).with("name", "student"))
+		if !postgres.IsUniqueViolation(err, "pass_prices_pass_id_name_key") {
+			t.Errorf("got %v, want a pass_prices_pass_id_name_key violation", err)
+		}
+	})
+}
+
+// A pass's events are of its series and currency, and each one's tier is in that event and of
+// the pass's kind; one tier per event and pass.
+func TestPassEvents(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	f := newFestival(t, conn)
+	// The refused rows use a second pass, so they can't hit the primary key of an accepted row.
+	other := mustInsert(t, conn, "passes", validPass(f.series).with("name", "Other"))
+	weekend := mustInsert(t, conn, "passes", validPass(f.series).with("name", "Weekend"))
+	otherSeries := mustInsert(t, conn, "event_series", validSeries())
+
+	tests := []struct {
+		name       string
+		row        row
+		wantCode   string // "" means the insert must succeed
+		constraint string // the constraint a refusal must name, if it is one of several
+	}{
+		{"day 1 from its standing tier", f.passEvent(f.pass, f.day1, f.day1Standing), "", ""},
+		{"day 2, every column", f.passEvent(f.pass, f.day2, f.day2Standing).with("version", 2), "", ""},
+		{"a second tier for day 1", f.passEvent(f.pass, f.day1, f.day1Standing), uniqueViolation, "pass_events_pkey"},
+		{"two passes share a tier", f.passEvent(weekend, f.day1, f.day1Standing), "", ""},
+		{"a tier shared with single tickets", f.passEvent(weekend, f.day2, f.day2Shared).with("tier_sold_via", "shared"), "", ""},
+		{"a tier sold only on its own", f.passEvent(other, f.day2, f.day2Single).with("tier_sold_via", "single"), checkViolation, ""},
+		{"sold_via other than the tier's", f.passEvent(other, f.day2, f.day2Single), foreignKeyViolation, "pass_events_tier_id_fkey"},
+		{"event of no series", f.passEvent(other, f.outside, f.outsideTier), foreignKeyViolation, "pass_events_event_id_fkey"},
+		{"event in another currency", f.passEvent(other, f.euro, f.euroTier), foreignKeyViolation, "pass_events_event_id_fkey"},
+		{"tier of another event", f.passEvent(other, f.day2, f.day1Standing), foreignKeyViolation, "pass_events_tier_id_fkey"},
+		{"seated tier for a standing pass", f.passEvent(other, f.day1, f.day1Seated), foreignKeyViolation, "pass_events_tier_id_fkey"},
+		{"kind other than the pass's", f.passEvent(other, f.day1, f.day1Seated).with("kind", "seated"), foreignKeyViolation, "pass_events_pass_id_fkey"},
+		{"series other than the pass's", f.passEvent(other, f.day1, f.day1Standing).with("series_id", otherSeries), foreignKeyViolation, "pass_events_pass_id_fkey"},
+		{"currency other than the pass's", f.passEvent(other, f.euro, f.euroTier).with("currency", "EUR"), foreignKeyViolation, "pass_events_pass_id_fkey"},
+		{"unknown pass", f.passEvent(unknownID, f.day2, f.day2Standing), foreignKeyViolation, "pass_events_pass_id_fkey"},
+		{"zero version", f.passEvent(other, f.day2, f.day2Standing).with("version", 0), checkViolation, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := insertNoID(t.Context(), conn, "pass_events", tc.row)
+			wantError(t, err, tc.wantCode)
+			var pgErr *pgconn.PgError
+			if tc.constraint != "" && errors.As(err, &pgErr) && pgErr.ConstraintName != tc.constraint {
+				t.Errorf("refused by %s, want %s", pgErr.ConstraintName, tc.constraint)
+			}
+		})
+	}
+
+	t.Run("a new row has version 1", func(t *testing.T) {
+		var version int
+		err := conn.QueryRow(t.Context(), `SELECT version FROM pass_events WHERE pass_id = $1 AND event_id = $2`,
+			f.pass, f.day1).Scan(&version)
+		if err != nil {
+			t.Fatalf("select version: %v", err)
+		}
+		if version != 1 {
+			t.Errorf("version %d, want 1", version)
+		}
+	})
+}
+
+// A pass never silently loses an event: an event it covers can't be deleted, leave the series or
+// change currency, and the tier it takes tickets from can't be deleted. The pass itself can't
+// change series, currency or kind while it covers events. Deleting the pass deletes its events
+// and prices.
+func TestPassesKeepWhatTheyCover(t *testing.T) {
+	conn := connect(t, pgtest.NewMigratedDatabase(t))
+	f := newFestival(t, conn)
+	mustInsert(t, conn, "pass_prices", validPassPrice(f.pass))
+	if err := insertNoID(t.Context(), conn, "pass_events", f.passEvent(f.pass, f.day1, f.day1Standing)); err != nil {
+		t.Fatalf("insert pass event: %v", err)
+	}
+
+	tests := []struct {
+		name, sql, id, constraint string
+	}{
+		{"delete the event", `DELETE FROM events WHERE id = $1`, f.day1, ""},
+		{"take the event out of the series", `UPDATE events SET series_id = NULL WHERE id = $1`, f.day1, "pass_events_event_id_fkey"},
+		{"change the event's currency", `UPDATE events SET currency = 'EUR' WHERE id = $1`, f.day1, "pass_events_event_id_fkey"},
+		{"delete the tier", `DELETE FROM ticket_tiers WHERE id = $1`, f.day1Standing, "pass_events_tier_id_fkey"},
+		{"change the pass's kind", `UPDATE passes SET kind = 'seated', seat_selection = 'per_event' WHERE id = $1`, f.pass, "pass_events_pass_id_fkey"},
+		{"change the pass's currency", `UPDATE passes SET currency = 'EUR' WHERE id = $1`, f.pass, "pass_events_pass_id_fkey"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := conn.Exec(t.Context(), tc.sql, tc.id)
+			if tc.constraint == "" { // deleting the event can trip either of its foreign keys
+				wantError(t, err, foreignKeyViolation)
+				return
+			}
+			if !postgres.IsForeignKeyViolation(err, tc.constraint) {
+				t.Errorf("got %v, want a %s violation", err, tc.constraint)
+			}
+		})
+	}
+
+	t.Run("the tier can't go back to being sold only on its own", func(t *testing.T) {
+		_, err := conn.Exec(t.Context(), `UPDATE ticket_tiers SET sold_via = 'single' WHERE id = $1`, f.day1Standing)
+		if !postgres.IsCheckViolation(err, "pass_events_tier_sold_via_check") {
+			t.Errorf("got %v, want a pass_events_tier_sold_via_check violation", err)
+		}
+	})
+
+	t.Run("the tier can't switch to being sold as whole sections", func(t *testing.T) {
+		_, err := conn.Exec(t.Context(), `UPDATE ticket_tiers SET sold_as = 'section' WHERE id = $1`, f.day1Standing)
+		if !postgres.IsCheckViolation(err, "ticket_tiers_section_sold_alone") {
+			t.Errorf("got %v, want a ticket_tiers_section_sold_alone violation", err)
+		}
+	})
+
+	t.Run("a tier switching to shared takes the pass's row with it", func(t *testing.T) {
+		if _, err := conn.Exec(t.Context(), `UPDATE ticket_tiers SET sold_via = 'shared' WHERE id = $1`, f.day1Standing); err != nil {
+			t.Fatalf("switch the tier to shared: %v", err)
+		}
+		var soldVia string
+		err := conn.QueryRow(t.Context(), `SELECT tier_sold_via FROM pass_events WHERE pass_id = $1 AND event_id = $2`,
+			f.pass, f.day1).Scan(&soldVia)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		if soldVia != "shared" {
+			t.Errorf("tier_sold_via %q, want shared", soldVia)
+		}
+	})
+
+	t.Run("deleting the pass deletes its events and prices", func(t *testing.T) {
+		if _, err := conn.Exec(t.Context(), `DELETE FROM passes WHERE id = $1`, f.pass); err != nil {
+			t.Fatalf("delete pass: %v", err)
+		}
+		for _, table := range []string{"pass_events", "pass_prices"} {
+			var count int
+			// table is one of the two above, never input, so building the SQL from it is safe.
+			if err := conn.QueryRow(t.Context(), `SELECT count(*) FROM `+table+` WHERE pass_id = $1`, f.pass).Scan(&count); err != nil {
+				t.Fatalf("count %s: %v", table, err)
+			}
+			if count != 0 {
+				t.Errorf("%d %s rows of the deleted pass are left", count, table)
+			}
+		}
+		if !exists(t, conn, "events", f.day1) {
+			t.Error("the event was deleted with the pass")
+		}
+	})
+}
+
+// New rows start like a new venue: version 1 (tickets have none); halls active, layouts,
+// events and passes as drafts, tickets available.
 func TestNewRowsDefaultStatusAndVersion(t *testing.T) {
 	conn := connect(t, pgtest.NewMigratedDatabase(t))
 	tr := newTree(t, conn)
 	eventID := mustInsert(t, conn, "events", validEvent(tr))
 	seriesID := mustInsert(t, conn, "event_series", validSeries())
+	passID := mustInsert(t, conn, "passes", validPass(seriesID))
+	passPriceID := mustInsert(t, conn, "pass_prices", validPassPrice(passID))
 	s := newSales(t, conn)
 	ticketID := mustInsert(t, conn, "tickets", s.standingTicket())
 
@@ -1142,6 +1595,8 @@ func TestNewRowsDefaultStatusAndVersion(t *testing.T) {
 		{table: "ticket_types", id: s.ticketType},
 		{table: "admin_holds", id: s.hold},
 		{table: "tickets", id: ticketID, wantStatus: "available", noVersion: true},
+		{table: "passes", id: passID, wantStatus: "draft"},
+		{table: "pass_prices", id: passPriceID},
 	}
 	for _, tc := range tests {
 		t.Run(tc.table, func(t *testing.T) {

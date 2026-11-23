@@ -8,12 +8,13 @@
 --
 -- An event needs no series: a one-off concert has none. A series can span venues (a tour), and
 -- its events can be in different currencies; whatever needs them to match checks it then.
--- Multi-event passes (a festival pass, a season ticket) will belong to a series and grant one
--- ticket in each of the events they cover (planned, see docs/open/12-domain-model.md). Its owner
--- (the organizer) comes with organizations in M2.
+-- Multi-event passes (a festival pass, a season ticket, migration 13) belong to a series and
+-- grant one ticket in each of the events of it they cover. Its owner (the organizer) comes with
+-- organizations in M2.
 --
--- No status: a series is visible through its published events, and a series with events can't be
--- deleted (events_series_id_fkey, migration 7), so there is nothing to archive. version works as
+-- No status: a series is visible through its announced events, and a series with events or
+-- passes can't be deleted (events_series_id_fkey, migration 7; passes_series_id_fkey, migration
+-- 13), so there is nothing to archive. version works as
 -- in venues (migration 1).
 CREATE TABLE event_series (
     id          uuid         PRIMARY KEY DEFAULT gen_random_uuid(),

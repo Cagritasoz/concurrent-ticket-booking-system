@@ -14,6 +14,11 @@ CREATE TABLE ticket_types (
     name        text         NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 100),
     -- E.g. "With a valid student ID, shown at the entrance".
     description text                  CHECK (length(btrim(description)) BETWEEN 1 AND 2000),
+    -- Who can pick the type. public: customers, the usual case. admin: only admins, never shown
+    -- to customers: complimentary tickets for a hold's guests ("Comp", 0.00), a box-office or
+    -- staff rate. Without it, a 0.00 type would be open to every customer of its tiers. A type
+    -- unlocked by a presale code would be a third value, added with codes.
+    visibility  text         NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'admin')),
 
     version     integer      NOT NULL DEFAULT 1 CHECK (version > 0),
 

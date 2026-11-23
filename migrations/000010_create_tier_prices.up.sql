@@ -5,7 +5,7 @@
 --   Balcony    300.00   200.00
 --   VIP        900.00   (none)
 -- No row exists for tier_prices that references VIP and Student.
--- A ticket type without a row in a tier isn't sold there (no Student price in VIP). Publishing
+-- A ticket type without a row in a tier isn't sold there (no Student price in VIP). Announcing
 -- checks that every tier has at least one price; the service does that, since the database can't
 -- require a child row to exist.
 CREATE TABLE tier_prices (

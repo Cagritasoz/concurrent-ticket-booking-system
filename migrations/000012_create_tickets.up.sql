@@ -5,9 +5,9 @@
 --     seats); moving a seat to another tier changes its ticket's tier_id;
 --   - giving a standing tier 500 places of the Floor inserts 500 tickets (generate_series), and
 --     lowering that deletes available ones.
--- So there is one source of truth, before and after publishing. A draft's tickets can't be
--- booked: bookings need a published event that is on sale (M3). One row per unit means seated
--- and standing sales work the same way, and buyers of standing places lock different rows (FOR
+-- So there is one source of truth, before and after announcing. Tickets can't be booked before
+-- then: bookings need an announced event that is on sale (M3). One row per unit means seated and
+-- standing sales work the same way, and buyers of standing places lock different rows (FOR
 -- UPDATE SKIP LOCKED) instead of queuing on one counter.
 --
 -- Two rules the database can't see without repeating the layout on every ticket, checked by the

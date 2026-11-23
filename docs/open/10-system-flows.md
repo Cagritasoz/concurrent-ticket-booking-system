@@ -3,7 +3,7 @@
 How the planned system behaves from the user's point of view and inside the application: what
 each module does, how the event side's tables fit together, the booking lifecycle, Redis's role,
 and the main paths (buying, cancelling, abandoning, paying, refunding). The event side's tables
-exist (migrations 1 to 12, M1 step 6a); the flows that use them are design, not code yet. The
+exist (migrations 1 to 15, M1 step 6a); the flows that use them are design, not code yet. The
 milestone that builds each part is in the [roadmap](02-roadmap.md); the rules it must respect are
 the [invariants](04-invariants.md); why each table looks the way it does is in the
 [decisions](05-decisions.md).
@@ -12,7 +12,7 @@ the [invariants](04-invariants.md); why each table looks the way it does is in t
 
 | Part | Responsibility | Source of truth for |
 |---|---|---|
-| **event** module | Admin side: venues with their halls, layouts, sections and seats, events, ticket tiers and ticket types with their prices, generating one ticket row per sellable unit, publishing and cancelling events | Events, tiers, ticket types, prices, tickets |
+| **event** module | Admin side: venues with their halls, layouts, sections and seats, events, ticket tiers and ticket types with their prices, generating one ticket row per sellable unit, the event lifecycle (submit, confirm, announce, reschedule, cancel) | Events, tiers, ticket types, prices, tickets |
 | **booking** module | Customer side: holding tickets, the booking lifecycle, idempotent requests, per-customer limits, Stripe payments, webhooks, expiry, reconciliation, refunds | Bookings, who owns which ticket, payments |
 | **search** module | Fast discovery for users: full-text search, filters, sorting, pagination over Elasticsearch | Nothing: it is a read-only copy of Postgres |
 | **auth** | Verifies Keycloak login tokens and roles (venue manager, organizer, customer); organizations, their members and venue access grants live in Postgres | Nothing: Keycloak owns identities |
@@ -54,12 +54,13 @@ nothing about dates or prices.
 | `venues` | A building, with its address and time zone | Zorlu PSM, Istanbul |
 | `halls` | A room in it that can host an event while the other rooms host theirs | Turkcell Stage; a cinema's Screen 3 |
 | `layouts` | One way to set up a hall. A hall has one layout per setup, used one at a time | "Concert, standing floor"; "Theater, all seated" |
-| `sections` | A part of a layout: `seated` (has seats) or `standing` (has only a `capacity`) | "Block 101" (seated); "Floor" (standing, 3,000 people) |
+| `sections` | A part of a layout: `seated` (has seats) or `standing` (has only a `capacity`), with a `position` for the order of the layout's list | "Block 101" (seated); "Floor" (standing, 3,000 people) |
 | `seats` | One seat of a seated section: labels printed on the ticket, positions for ordering, accessibility | Row "A", seat "12"; a wheelchair space |
 
 Deleting a venue deletes everything below it (`ON DELETE CASCADE`), unless an event or ticket uses
-it: then the delete is refused, and archiving is the way to retire it. A layout that a published
-event uses is frozen; to change it, an admin copies it (M1 step 11).
+it: then the delete is refused, and archiving is the way to retire it. A layout that a confirmed
+event uses (the venue agreed to that setup) is frozen; to change it, an admin copies it (M1 step 11). The copy's seats are new rows
+but keep each seat's `physical_seat_key`, so the same physical seat can be recognised in both.
 
 ### The event: one date in one layout
 
@@ -75,11 +76,59 @@ only groups them, and a series with events can't be deleted. An event has:
   database can stop **two events in one hall from overlapping in time**
   (`events_no_overlap_in_hall`); a foreign key on `(layout_id, hall_id)` keeps it equal to the
   layout's hall.
-- `starts_at`, `ends_at`, optional `doors_open_at`, and optional `on_sale_at` (when sales open; no
-  value means as soon as it is published).
+- `starts_at`, `ends_at` (the show, as customers see it) and optional `doors_open_at`.
+- Optional `hall_reserved_from` and `hall_reserved_until`: how long the event needs the hall
+  when that is longer than the show (setting up before, clearing after). The no-overlap rule
+  uses them, and falls back to the show's times where they are empty.
+- Optional `on_sale_at` and `off_sale_at`: when single-ticket sales open (empty: when it is
+  announced) and close (empty: when it starts; can be earlier, or later up to the end for late
+  entry). Passes have their own sales times, so they can go on sale first.
 - `currency`: every price of the event is in it.
-- `status`: `draft` (being prepared, nobody can book), `published` (visible; on sale from
-  `on_sale_at`), `cancelled`.
+- `per_customer_limit` (optional): at most this many single tickets of the event per customer,
+  across its tiers; a tier can have a lower limit of its own (see
+  [Per-customer limits](12-domain-model.md#per-customer-limits-columns-built-enforced-from-m3)).
+- `status`, with a time for each step (`submitted_at`, `confirmed_at`, `announced_at`,
+  `cancelled_at`), a `decline_reason` and `rescheduled_at`; see the lifecycle below.
+
+#### The event's lifecycle
+
+The organizer prepares the event, **the venue confirms the date and the setup**, and the
+organizer decides when to announce it. This is how venue-based ticketing works: the venue's
+concern is its calendar, its room and its capacity, not the prices.
+
+```
+            submit              confirm               announce            cancel
+  draft ──────────────> submitted ──────────> confirmed ──────────> announced ──────> cancelled
+    ^                      │                     │   ^                  │
+    └──── decline ─────────┘                     │   │                  └── reschedule (stays
+    └──── withdraw ────────┴─────────────────────┘   │                      announced)
+                                    change date, hall or layout: back to submitted
+```
+
+| Status | Meaning | Takes the hall's slot | Public |
+|---|---|---|---|
+| `draft` | Being prepared, private to its organizer; can be deleted | No | No |
+| `submitted` | The venue is asked for this date and layout | Yes | No |
+| `confirmed` | The venue agreed; the layout is frozen; the organizer finishes tiers, prices and holds, which the venue doesn't approve | Yes | No |
+| `announced` | Customers see the event, its seat map and prices; single tickets sell between `on_sale_at` and `off_sale_at` | Yes | Yes |
+| `cancelled` | Was announced and won't happen; tickets are refunded (M7) | No | Yes, as cancelled |
+
+- **Declined** by the venue, the event goes back to `draft` with a `decline_reason`; withdrawn by
+  the organizer, back to `draft` too. Both free the slot. Until it is announced, nothing can be
+  sold, so it can also be deleted.
+- **Changing the date, hall or layout** of a confirmed event sends it back to `submitted`, for
+  the venue to agree again.
+- **Rescheduling** an announced event changes its times and sets `rescheduled_at`: it stays
+  announced, its tickets stay valid for the new date, and the no-overlap rule checks the new
+  slot. From M2 the venue manager must agree to the new date.
+- **Drafts don't take the slot:** the no-overlap rule only counts submitted, confirmed and
+  announced events, so two organizers can draft the same Saturday. Submitting is what claims it:
+  the second submit for the slot is refused by the database (`23P01`), however close together
+  they come. The admin UI can warn while drafting, but only the submit decides.
+- **A venue's own events** (a cinema scheduling its showings) are confirmed as soon as they are
+  submitted, from M2 when organizations exist. Until M2 there are no roles, so any admin takes
+  every step.
+- "On sale", "sold out" and "past" aren't statuses: they follow from the times and the tickets.
 
 ### What an event sells: tiers, ticket types and prices
 
@@ -88,7 +137,7 @@ A ticket's price depends on two separate questions, and each has its own table:
 | Question | Table | Examples |
 |---|---|---|
 | **Where** is the ticket? | `ticket_tiers`: a price level. `kind` `seated` (the customer picks seats) or `standing` (the customer picks a quantity); an optional per-customer limit | "Stalls", "Balcony", "VIP", "Floor", "Floor early bird" |
-| **Who** is it for? | `ticket_types`: per event, with a description of who qualifies (checked at the door) | "Adult", "Student", "Child"; or just "Standard" |
+| **Who** is it for? | `ticket_types`: per event, with a description of who qualifies (checked at the door) and a `visibility`: `public`, or `admin` for types only admins can pick | "Adult", "Student", "Child"; or just "Standard"; "Comp" (admin) |
 | **What does it cost?** | `tier_prices`: one row per tier and ticket type, the price in minor units of the event's currency (`45000` is 450.00 TRY) | Stalls + Adult = 450.00 |
 
 So the prices of an event form a matrix:
@@ -147,31 +196,36 @@ without sending rows through Go:
 A seat of the layout that no tier was given has no ticket and isn't sold. Every change takes the
 event's lock (invariant I14), so two admins can't change the same event's tickets at once.
 
-**After publishing** (M1 step 11) the same actions still work, on **unsold** tickets only: a
+**After announcing** (M1 step 11) the same actions still work, on **unsold** tickets only: a
 ticket that a held (pending payment) or confirmed booking has can't be moved, held or killed, and
 a bulk change that includes one is refused as a whole. Two actions change: lowering a quantity or
 taking a seat out of a tier **kills** tickets instead of deleting them, and raising a quantity
 revives that tier's killed places first. Prices can change too; a new price applies to new
-bookings, since a booking copies its price. The layout and the date stay fixed. The full rule is
-in [05 · Decisions](05-decisions.md) ("What can change after publishing").
+bookings, since a booking copies its price. The layout stays fixed (frozen since the venue
+confirmed it), and a new date is a reschedule (see the lifecycle above). The full rule is in
+[05 · Decisions](05-decisions.md) ("What can change after announcing").
 
 ### An event's data from draft to sale
 
 1. **Create the event** in a layout: an `events` row, `draft`.
-2. **Create the tiers** (`ticket_tiers`) and **the ticket types** (`ticket_types`).
-3. **Set the prices**: a `tier_prices` row for each type sold in each tier.
-4. **Give the tiers seats and standing places**: tickets are created (above).
-5. **Place admin holds and kills** if needed.
-6. **Publish**: the service checks that the layout is active, every tier has at least one price,
-   each standing section's tickets fit its capacity, and all tickets fit the hall's capacity;
-   then the status becomes `published`. No rows are created at this point.
-7. **Sales open** at `on_sale_at` (or right away). Customers book tickets (M3): picking seats or a
-   quantity, and a ticket type for each.
-8. **Cancel** if needed: the status becomes `cancelled` and its bookings are refunded (M7).
+2. **Submit it** to the venue: `submitted`, which claims the hall's slot. The venue **confirms**
+   it (`confirmed`, the layout is now frozen) or declines it (back to `draft`).
+3. **Create the tiers** (`ticket_tiers`) and **the ticket types** (`ticket_types`).
+4. **Set the prices**: a `tier_prices` row for each type sold in each tier.
+5. **Give the tiers seats and standing places**: tickets are created (above).
+6. **Place admin holds and kills** if needed.
+7. **Announce**: the service checks that the event is confirmed, every `single` or `shared` tier
+   has at least one price and every `pass_only` tier is used by a pass, each standing section's
+   tickets fit its capacity, and all tickets fit the hall's capacity; then the status becomes
+   `announced`. No rows are created at this point.
+8. **Sales open** at `on_sale_at` (or right away) and close at `off_sale_at` (or at the start).
+   Customers book tickets (M3): picking seats or a quantity, and a ticket type for each.
+9. **Reschedule** or **cancel** if needed: a reschedule keeps the tickets valid; a cancel makes
+   the status `cancelled` and its bookings are refunded (M7).
 
-A draft can be deleted: the service deletes its tickets first (tickets refuse to let anything
-they point at be deleted), and the event then takes its tiers, ticket types, prices and holds
-with it.
+Steps 3 to 6 can start while the event is still a draft. An event that isn't announced can be
+deleted: the service deletes its tickets first (tickets refuse to let anything they point at be
+deleted), and the event then takes its tiers, ticket types, prices and holds with it.
 
 ### Following one ticket through the tables
 
@@ -195,7 +249,8 @@ The database guarantees, with the constraint that does it:
 |---|---|
 | Seats only in seated sections | `seats_section_id_fkey`: seats reference `(id, kind)` of sections, with `section_kind` always `seated` |
 | An event's hall is its layout's hall | `events_layout_id_fkey` on `(layout_id, hall_id)` |
-| No two events overlap in one hall (cancelled ones don't count) | `events_no_overlap_in_hall`, an exclusion constraint |
+| No two events that hold a slot (submitted, confirmed, announced) overlap in one hall, counting the time reserved for setting up and clearing | `events_no_overlap_in_hall`, an exclusion constraint with a `WHERE` |
+| An event's times match its status, in order (submitted, then confirmed, then announced, then cancelled) | `events_…_matches_status` and `events_…_after_…` checks |
 | A price's tier and ticket type are of the same event | `tier_prices_tier_id_fkey` and `tier_prices_ticket_type_id_fkey`, both over `(…, event_id)` |
 | A ticket's tier is of the ticket's event and kind | `tickets_tier_id_fkey` on `(tier_id, event_id, kind)` |
 | A standing ticket is in a standing section; a seated ticket has a seat of its section | `tickets_section_id_fkey` on `(section_id, kind)`, `tickets_seat_id_fkey` on `(seat_id, section_id)`, `tickets_seat_only_seated` |
@@ -207,7 +262,8 @@ The services check what the database can't see, with the event locked:
 - a ticket's section is in the event's layout (so a draft changes layout only while it has no
   tickets);
 - a standing section's tickets, of all tiers together, fit its capacity;
-- at publish, every tier has at least one price.
+- at announce, every `single` or `shared` tier has at least one price, and every `pass_only` tier
+  is used by a pass.
 
 ## Which events the model supports
 
@@ -222,23 +278,29 @@ The services check what the database can't see, with the event locked:
 | Several price levels; early bird and regular sharing one floor | Several tiers; several standing tiers in one section |
 | Adult, student, child (or only "Standard") prices | Ticket types and the price matrix |
 | Free events | A price of 0 |
-| Per-customer limits | `per_customer_limit` on the tier (enforced in M3) |
+| Per-customer limits | `per_customer_limit` on the event, the tier and the pass (enforced in M3) |
+| Complimentary tickets, box-office rates | Ticket types with `admin` visibility, which customers never see |
 | Guest lists, press and sponsor seats, camera positions | Admin holds and kills |
-| Announced first, on sale later | `on_sale_at` |
+| Announced first, on sale later; online sales closing before the start | `on_sale_at`, `off_sale_at` |
+| Passes on sale before day tickets | A pass has its own `on_sale_at`; the event's sales times are for single tickets |
+| A venue confirming each organizer's date and setup | The lifecycle: `submitted`, then `confirmed` by the venue |
+| Load-in and load-out between events | `hall_reserved_from` / `hall_reserved_until`, used by the no-overlap rule |
+| A show moved to another date | Rescheduling: the event stays announced and its tickets stay valid |
 | Multiplexes, buildings with several rooms running at once | The no-overlap rule is per hall |
 | A film's run, a theater season, a team's home matches, a festival's days | An event series groups the events; each keeps its own date, tiers and prices |
-| Rescaling while on sale (move unsold seats to another tier, reprice, late holds and kills) | Unsold tickets stay editable after publishing; bookings copy their price (M1 step 11) |
+| Rescaling while on sale (move unsold seats to another tier, reprice, late holds and kills) | Unsold tickets stay editable after announcing; bookings copy their price (M1 step 11) |
 
 **Not supported yet:**
 
 | Event or feature | Why not |
 |---|---|
-| Festival passes, season tickets, multi-day tickets | A ticket belongs to one event; there is no pass or package |
+| Festival passes, season tickets, multi-day tickets | Their tables exist (`passes`, `pass_prices`, `pass_events`, migrations 13 to 15, see 12 · Domain model); selling them comes with bookings (M3) |
 | An event using several halls at once (a conference, a whole-venue festival) | An event has one layout, so one hall |
 | Timed entry (museum slots) | Possible as many small standing events, but clumsy |
-| Tables or boxes sold only as a whole | A ticket is one seat; this needs a seat group and a booking rule |
+| Tables or boxes sold only as a whole | Each box or table is its own section and its tier is `sold_as = section` (the column exists); the booking rule that takes the section whole comes in M3 |
 | Online or streamed events, events without a venue | Every event needs a hall |
-| A "postponed" or "rescheduled" status | Only draft, published and cancelled; a published event's date stays fixed, and postponing is settled with cancellations (M7) |
+| "Postponed, new date not known yet" | A new date is a reschedule; without one, the event stays at its old date or is cancelled (it would need an empty start time and paused sales) |
+| Several tentative holds on one date ("first hold, second hold") | Only one event can be submitted for a slot at a time; a second waits until the first is declined or withdrawn |
 | Rules per ticket type (a child needs an adult, a limit per type), presales and sales windows per tier | Only the description says who qualifies; enforced tier rules come later |
 | Fees, taxes, automatic dynamic pricing | Not modelled yet (an admin can change prices by hand); fees and taxes are rounded to minor units when they come |
 | A drawn seat map (section shapes, curved rows, the stage) | The seat map is a grid per section from the row and seat positions; a drawing per layout comes with the admin UI |
@@ -310,8 +372,9 @@ the PENDING_PAYMENT booking in Postgres; the Redis key is a fast mirror of it.
    module:
    1. checks the idempotency key: a retry or a double-click returns the same booking instead of
       creating a second one (invariant I6);
-   2. runs the booking rules: the event is published and on sale (`on_sale_at`), each ticket type
-      has a price in the ticket's tier, the per-customer limit isn't exceeded, and so on;
+   2. runs the booking rules: the event is announced and on sale (between `on_sale_at` and
+      `off_sale_at`; for a pass, the pass's own sales times), each ticket type has a price in the
+      ticket's tier, the per-customer limits aren't exceeded, and so on;
    3. picks a new booking ID and tries `SET NX` in Redis for each ticket. If any key is already
       taken, it stops right away with "seat no longer available" and releases the keys it did get;
    4. in **one Postgres transaction**: inserts the booking (PENDING_PAYMENT, `expires_at`), its
@@ -387,7 +450,7 @@ buyers. Holds are therefore limited on several sides:
 |---|---|
 | Login required | Holds belong to a Keycloak account, not an anonymous browser. |
 | Short hold time | Each hold lasts minutes, not hours. |
-| Per-customer limit per tier | Counts **held and confirmed** tickets, so one account can never hold more than the limit (e.g. 4) at once. |
+| Per-customer limits per event and per tier | Count **held and confirmed** tickets, so one account can never hold more than the limit (e.g. 4) at once. |
 | One open booking per event per customer (proposed) | A new hold first requires finishing or cancelling the previous one. |
 | Rate limiting on `POST /bookings` (proposed) | Stops rapid hold/expire/hold loops. |
 | Cool-down after repeated expiries (possible later) | An account that lets many holds expire waits before holding again. |

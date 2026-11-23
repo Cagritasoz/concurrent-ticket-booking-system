@@ -22,23 +22,31 @@ type AdminHold struct {
 }
 
 type Event struct {
-	ID          uuid.UUID
-	LayoutID    uuid.UUID
-	HallID      uuid.UUID
-	SeriesID    *uuid.UUID
-	Name        string
-	Description *string
-	StartsAt    time.Time
-	EndsAt      time.Time
-	DoorsOpenAt *time.Time
-	OnSaleAt    *time.Time
-	Currency    string
-	Status      string
-	PublishedAt *time.Time
-	CancelledAt *time.Time
-	Version     int32
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID                uuid.UUID
+	LayoutID          uuid.UUID
+	HallID            uuid.UUID
+	SeriesID          *uuid.UUID
+	Name              string
+	Description       *string
+	StartsAt          time.Time
+	EndsAt            time.Time
+	DoorsOpenAt       *time.Time
+	HallReservedFrom  *time.Time
+	HallReservedUntil *time.Time
+	OnSaleAt          *time.Time
+	OffSaleAt         *time.Time
+	Currency          string
+	PerCustomerLimit  *int32
+	Status            string
+	SubmittedAt       *time.Time
+	ConfirmedAt       *time.Time
+	AnnouncedAt       *time.Time
+	CancelledAt       *time.Time
+	DeclineReason     *string
+	RescheduledAt     *time.Time
+	Version           int32
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type EventSeries struct {
@@ -73,21 +81,65 @@ type Layout struct {
 	UpdatedAt   time.Time
 }
 
+type Pass struct {
+	ID               uuid.UUID
+	SeriesID         uuid.UUID
+	Name             string
+	Description      *string
+	Kind             string
+	SeatSelection    *string
+	Currency         string
+	PerCustomerLimit *int32
+	OnSaleAt         *time.Time
+	Status           string
+	AnnouncedAt      *time.Time
+	CancelledAt      *time.Time
+	Version          int32
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type PassEvent struct {
+	PassID      uuid.UUID
+	EventID     uuid.UUID
+	TierID      uuid.UUID
+	SeriesID    uuid.UUID
+	Currency    string
+	Kind        string
+	TierSoldVia string
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type PassPrice struct {
+	ID          uuid.UUID
+	PassID      uuid.UUID
+	Name        string
+	Description *string
+	PriceAmount int64
+	Visibility  string
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type Seat struct {
-	ID             uuid.UUID
-	SectionID      uuid.UUID
-	SectionKind    string
-	RowLabel       string
-	SeatLabel      string
-	RowPosition    int32
-	SeatPosition   int32
-	Type           string
-	RestrictedView bool
-	ViewNote       *string
-	Aisle          bool
-	Version        int32
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID              uuid.UUID
+	SectionID       uuid.UUID
+	SectionKind     string
+	RowLabel        string
+	SeatLabel       string
+	RowPosition     int32
+	SeatPosition    int32
+	Type            string
+	RestrictedView  bool
+	ViewNote        *string
+	Aisle           bool
+	PhysicalSeatKey uuid.UUID
+	Version         int32
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type Section struct {
@@ -96,6 +148,7 @@ type Section struct {
 	Name      string
 	Kind      string
 	Capacity  *int32
+	Position  int32
 	Version   int32
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -121,6 +174,8 @@ type TicketTier struct {
 	Description      *string
 	Kind             string
 	PerCustomerLimit *int32
+	SoldAs           string
+	SoldVia          string
 	Version          int32
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
@@ -131,6 +186,7 @@ type TicketType struct {
 	EventID     uuid.UUID
 	Name        string
 	Description *string
+	Visibility  string
 	Version     int32
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

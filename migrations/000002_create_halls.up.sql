@@ -22,7 +22,7 @@ CREATE TABLE halls (
     name        text         NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 200),
     -- E.g. which entrance leads to it, or its floor in the building.
     description text                  CHECK (length(btrim(description)) BETWEEN 1 AND 5000),
-    -- Maximum occupancy of the room, if known. Publishing an event checks its tickets against it
+    -- Maximum occupancy of the room, if known. Announcing an event checks its tickets against it
     -- (M1 step 10).
     capacity    integer               CHECK (capacity > 0),
 

@@ -30,6 +30,15 @@ CREATE TABLE seats (
     -- Next to an aisle, which some customers prefer and the seat map shows.
     aisle           boolean      NOT NULL DEFAULT false,
 
+    -- Which physical seat of the hall this is. A seat row belongs to one layout, so copying a
+    -- frozen layout (M1 step 11) makes new seat rows with new ids; the copy keeps this key, so
+    -- row A seat 12 of "Theater" and of its copy "Theater v2" share it. A new seat gets a new
+    -- key. It is what a same_seat pass (migration 13) uses to find a holder's seat in events of
+    -- different copies, and what finds one broken seat in every layout of its hall. Not a foreign
+    -- key: there is no table of physical seats, only this shared value. A layout has each key at
+    -- most once; the copy keeps that, since seats don't store their layout.
+    physical_seat_key uuid       NOT NULL DEFAULT gen_random_uuid(),
+
     version         integer      NOT NULL DEFAULT 1 CHECK (version > 0),
 
     created_at      timestamptz  NOT NULL DEFAULT now(),
@@ -53,3 +62,6 @@ CREATE UNIQUE INDEX seats_section_id_position_key ON seats
 -- Two seats of a section can't have the same labels, ignoring case: the ticket names the seat.
 CREATE UNIQUE INDEX seats_section_id_label_key ON seats
     (section_id, lower(row_label), lower(seat_label));
+-- One physical seat in every layout it is in: for a same_seat pass's booking, and to kill a
+-- broken seat everywhere.
+CREATE INDEX seats_physical_seat_key_idx ON seats (physical_seat_key);

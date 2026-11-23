@@ -188,9 +188,11 @@ func TestMigrator_FailedFirstMigrationIsForcedToZero(t *testing.T) {
 	}
 	requireVersion(t, migrator, 0, false)
 
-	// Fix the file, as a person would, and run Up again with a new Migrator.
-	files["000001_create_a.up.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE a (id int);")}
-	fixed := newMigrator(t, databaseURL, files)
+	// Fix the file, as a person would, and run Up again with a new Migrator. The fixed files are a
+	// new map, not an edit of files: golang-migrate reads the files ahead in a goroutine of its own,
+	// which Up doesn't wait for when a migration fails, so writing to the map it reads would be a
+	// data race.
+	fixed := newMigrator(t, databaseURL, testMigrations())
 	if err := fixed.Up(); err != nil {
 		t.Fatalf("Up after the fix: %v", err)
 	}

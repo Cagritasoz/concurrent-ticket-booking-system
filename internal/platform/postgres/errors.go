@@ -12,6 +12,7 @@ const (
 	codeForeignKeyViolation = "23503"
 	codeUniqueViolation     = "23505"
 	codeCheckViolation      = "23514"
+	codeExclusionViolation  = "23P01"
 )
 
 // The functions below let a module turn a broken constraint into its own error, like Spring's
@@ -42,6 +43,12 @@ func IsForeignKeyViolation(err error, constraint string) bool {
 // constraint.
 func IsCheckViolation(err error, constraint string) bool {
 	return isViolation(err, codeCheckViolation, constraint)
+}
+
+// IsExclusionViolation reports whether err is Postgres refusing a row that conflicts with another
+// row under this EXCLUDE constraint, e.g. two events in one hall at overlapping times.
+func IsExclusionViolation(err error, constraint string) bool {
+	return isViolation(err, codeExclusionViolation, constraint)
 }
 
 func isViolation(err error, code, constraint string) bool {

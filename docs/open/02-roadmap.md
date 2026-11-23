@@ -2,7 +2,9 @@
 
 ## Where we are
 
-- **Current milestone:** M1 Postgres + Event, on branch `milestone/postgres-event`.
+- **Current milestone:** M1 Postgres + Event, merging into `main` in four parts (see below).
+  Part 1, branch `milestone/postgres-event` (steps 1 to 6a), is ready for its pull request;
+  part 2 starts on `milestone/postgres-event-venue-tree` once it has merged.
 - **Finished:** M0 Foundation, merged into `main` with CI green (entry point, config, logging,
   HTTP server with health checks and request IDs, graceful shutdown, endpoint and shutdown tests,
   Makefile, lint config and CI workflow).
@@ -22,10 +24,23 @@
   including what later milestones add, is mapped in [12 · Domain model](12-domain-model.md).
 - **In progress:** step 6c's first layout queries exist; they don't use the status and version
   yet.
-- **Next:** M1 step 6b, halls end to end, built like venues (archive, restore, `If-Match`).
+- **Next:** M1 step 6b, halls end to end, built like venues (archive, restore, `If-Match`), in
+  three steps: the hall queries, the hall service, then the endpoints and their tests.
 
-Each milestone is developed on its own branch named `milestone/{milestone name}`, branched from
-`main`. Every milestone ends with `go test -race` green (unit and integration tests) and CI passing.
+Each milestone is developed on branches named `milestone/{milestone name}`, branched from `main`.
+A large milestone merges in parts, each on its own branch `milestone/{milestone name}-{part}`
+with its own pull request (decided 2026-11-23). Every part, and so every milestone, ends with
+`go test -race` green (unit and integration tests) and CI passing, so `main` always works. A
+migration is frozen once it is on `main`: later changes to its table are new migrations.
+
+M1's parts:
+
+| Part | Branch | Steps | Contents |
+|---|---|---|---|
+| 1 | `milestone/postgres-event` | 1 to 6a | Postgres, migrations, sqlc, venues end to end, the whole event schema |
+| 2 | `milestone/postgres-event-venue-tree` | 6b to 7 | Halls, layouts, sections and seats end to end |
+| 3 | `milestone/postgres-event-catalog` | 8 and 9 | Events and series, tiers, ticket types, prices, ticket creation |
+| 4 | `milestone/postgres-event-lifecycle` | 10 to 12 | The event lifecycle, the edit rules, holds and kills, closing M1 |
 
 ## Milestones
 

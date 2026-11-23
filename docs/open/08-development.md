@@ -79,15 +79,17 @@ There is one migration per table, with its indexes: 1 venues, 2 halls, 3 layouts
 5 seats, 6 event series, 7 events, 8 ticket tiers, 9 ticket types, 10 tier prices, 11 admin holds,
 12 tickets, 13 passes, 14 pass prices, 15 pass events.
 
-**Changing the schema while the milestone isn't merged:** edit the migration that holds the
+**Changing a table whose migration isn't on `main` yet:** edit the migration that holds the
 table, so each table's whole structure stays in one file. Databases that ran the old version
 must be recreated: the tests' always are; locally, delete the Postgres volume and run
-`make migrate-up` again.
+`make migrate-up` again. Migrations 1 to 15 reach `main` with M1's first pull request; from then
+on, changes to those tables are new migrations.
 
-**Adding a migration** (a new table, or any change after the milestone merged into `main`):
+**Adding a migration** (a new table, or any change to a table whose migration is on `main`):
 
-1. Create two files with the next number and a lowercase name:
-   `000016_create_organizations.up.sql` and `000016_create_organizations.down.sql`.
+1. Create two files with the next number and a lowercase name: `000016_create_organizations`
+   for a new table, or a name saying what changes, such as `000016_add_events_organizer_id`
+   (an `ALTER TABLE`), each as `.up.sql` and `.down.sql`.
 2. The up file makes the change; the down file undoes exactly that change.
 3. Check both directions: `make migrate-up`, `make migrate-down`, `make migrate-up`.
 4. Run `make generate`: sqlc reads the migrations as its schema, so a changed table changes the
@@ -97,10 +99,11 @@ must be recreated: the tests' always are; locally, delete the Postgres volume an
 
 **Rules:**
 
-- Once a milestone has merged into `main`, never edit its migrations; fix them with a new one.
-  From then on other machines, CI on `main` and later production have run them, and an edited
-  file would leave databases that ran the old version different from ones that run the new
-  version, with nothing to show it. Before the merge, only throwaway databases have run them.
+- Once a migration is on `main`, never edit it; fix it with a new one. A milestone can merge in
+  several parts, so this is per migration, not per milestone. From then on other machines, CI
+  on `main` and later production have run it, and an edited file would leave databases that ran
+  the old version different from ones that run the new version, with nothing to show it. Before
+  the merge, only throwaway databases have run it.
 - Each file runs as one transaction: if a statement fails, the whole file is undone. So don't put
   `BEGIN` / `COMMIT` in the files, and avoid statements Postgres can't run inside a transaction,
   such as `CREATE INDEX CONCURRENTLY`.

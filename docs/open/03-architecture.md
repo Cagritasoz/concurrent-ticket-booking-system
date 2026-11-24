@@ -11,21 +11,21 @@
 │   └── migrate/main.go              # migration command: up, down, version, force
 ├── internal/
 │   ├── config/                      # environment variables → typed Config + Validate()
-│   ├── event/                       # MODULE: venues; halls being built (create so far); sections have tables, layouts also queries (events, tiers, tickets later in M1)
+│   ├── event/                       # MODULE: venues and halls; sections have tables, layouts also queries (events, tiers, tickets later in M1)
 │   │   ├── venue.go                 # Venue (the module's own type), VenueStatus, the venue errors, row → Venue
 │   │   ├── errors.go                # ErrVersionMismatch, shared by every versioned object of the module
 │   │   ├── venue_input.go           # VenueInput, its validation, ValidationError / FieldError
 │   │   ├── venue_service.go         # VenueService (Get, Create, List by status in keyset pages, Update in a locked transaction, Archive, Restore, Delete; every change checks the version) on top of the generated queries
-│   │   ├── hall.go                  # Hall, HallStatus, ErrHallNameTaken, row → Hall
+│   │   ├── hall.go                  # Hall, HallStatus, the hall errors, row → Hall
 │   │   ├── hall_input.go            # HallInput and its validation
-│   │   ├── hall_service.go          # HallService (Create: checks the venue is active under a FOR SHARE lock, then inserts)
+│   │   ├── hall_service.go          # HallService (Get, Create, List a venue's halls by status, Update, Archive, Restore, Delete; every change locks the venue FOR SHARE before the hall FOR UPDATE)
 │   │   ├── queries/                 # the SQL sqlc reads: venues.sql, halls.sql, layouts.sql
 │   │   └── eventdb/                 # sqlc-generated (db.go, models.go with one struct per table; venues.sql.go, halls.sql.go, layouts.sql.go) + hand-written tests
 │   ├── platform/
 │   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)
 │   │   └── telemetry/               # slog logger setup, request-ID context + log handler
-│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, hall handlers (halls.go: create), service error → HTTP status mapping for every handler (errors.go: writeServiceError), strict JSON decoding, JSON Merge Patch (patch.go), ETag and If-Match (etag.go), Problem Details errors
+│   └── httpapi/                     # Gin router, middleware, health handlers, Readiness, venue handlers, hall handlers (halls.go), service error → HTTP status mapping for every handler (errors.go: writeServiceError), strict JSON decoding, JSON Merge Patch (patch.go), ETag and If-Match (etag.go), Problem Details errors
 ├── migrations/                      # SQL migrations (NNNNNN_name.up.sql / .down.sql), one per table, embedded by migrations.go
 ├── examples/                        # early learning code, not part of the app (see 09-examples.md)
 ├── docs/open/                       # this documentation

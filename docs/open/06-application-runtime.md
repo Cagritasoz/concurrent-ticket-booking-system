@@ -122,6 +122,12 @@ Unknown routes get Gin's default `404 page not found`.
 | POST | `/api/v1/admin/venues/{id}/restore` | `200` with the active venue and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived venue.** Needs `If-Match`. |
 | DELETE | `/api/v1/admin/venues/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a venue.** Needs `If-Match`. |
 | POST | `/api/v1/admin/venues/{id}/halls` | `201` with the hall, its `ETag` and a `Location` header (`/api/v1/admin/halls/{hall id}`), or `400` / `404` / `409` / `413` / `415` | **Create a hall** in an active venue. |
+| GET | `/api/v1/admin/venues/{id}/halls?status=active` | `200` with `{"halls": [...]}`, or `400` (bad `status`) / `404` (no such venue) | **List a venue's halls** of one status, sorted by name, all at once (no paging). |
+| GET | `/api/v1/admin/halls/{id}` | `200` with the hall and its `ETag`, or `404` | **Read a hall**, archived ones too. |
+| PATCH | `/api/v1/admin/halls/{id}` | `200` with the changed hall and its new `ETag`, or `400` / `404` / `409` / `412` / `413` / `415` / `428` | **Change some of a hall's fields** (JSON Merge Patch). Needs `If-Match`. |
+| POST | `/api/v1/admin/halls/{id}/archive` | `200` with the archived hall and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a hall.** Needs `If-Match`. |
+| POST | `/api/v1/admin/halls/{id}/restore` | `200` with the active hall and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived hall.** Needs `If-Match`. |
+| DELETE | `/api/v1/admin/halls/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a hall.** Needs `If-Match`. |
 
 ### Admin API
 
@@ -129,7 +135,7 @@ The admin routes are one Gin route group under `/api/v1/admin`, so M2 can add au
 all of them in one place; until then they have none. A request goes handler → service →
 generated queries → Postgres; the handler only translates between HTTP and the service.
 
-A venue is a building (a hall is a room in it; halls come in M1 step 6b). It looks like this.
+A venue is a building (a hall is a room in it, see "Halls" below). It looks like this.
 Names are snake_case, optional values are `null` (never left out), times are RFC 3339 in UTC:
 
 ```json
@@ -263,13 +269,32 @@ it, by the database (`ON DELETE CASCADE`).
 isn't known). Text is trimmed and blank optional text is stored as `null`, as for venues. The
 answer is `201` with the hall (`id`, `venue_id`, `name`, `description`, `capacity`, `status`
 `active`, `version` 1, `created_at`, `updated_at`), its `ETag`, and a `Location` of
-`/api/v1/admin/halls/{hall id}`: once created, a hall is named by its own id, without its venue
-(the route that reads it comes later in step 6b). The body is checked first (400). Then, in one
-transaction, the venue is read with a shared lock (`FOR SHARE`): an unknown venue is a 404 and an
-archived one a 409. The lock keeps the venue from being archived until the hall is committed,
-while other halls can still be created in it at the same time. A name that another active hall
-of the venue has, ignoring case, is a 409. The database's unique index decides this, so of two
-requests with one name at the same moment, exactly one wins.
+`/api/v1/admin/halls/{hall id}`. The body is checked first (400). Then, in one transaction, the
+venue is read with a shared lock (`FOR SHARE`): an unknown venue is a 404 and an archived one a
+409. The lock keeps the venue from being archived until the hall is committed, while other halls
+can still be created in it at the same time. A name that another active hall of the venue has,
+ignoring case, is a 409. The database's unique index decides this, so of two requests with one
+name at the same moment, exactly one wins.
+
+**Halls:** a hall is nested under its venue only to create it and to list the venue's halls
+(`/venues/{id}/halls`); after that it is named by its own id, without its venue
+(`/halls/{id}`), so a client needn't know the venue and can't name a hall with the wrong one.
+Reading, changing, archiving, restoring and deleting a hall work as for venues: the `ETag` is
+the version, every change needs `If-Match` (428 / 412), PATCH is a JSON Merge Patch (`null`
+clears `description` or `capacity`; a hall never moves to another venue, so `venue_id` is an
+unknown field), and an archived hall can't be changed or archived again (409), only restored.
+Renaming onto, or restoring onto, a name another active hall of the venue has meanwhile taken is
+a 409. **The list** (`GET /venues/{id}/halls?status=active`) has every hall of that status at
+once, sorted by name ignoring case, as `{"halls": [...]}` (`[]` when there are none); `status`
+is `active` (the default) or `archived`. A venue has only a few halls, so there is no paging; the
+body is an object so paging could be added without breaking clients.
+
+**A hall of an archived venue counts as archived**, whatever its own status says: it can be
+read, listed and deleted, but PATCH, archive and restore are a 409 ("venue is archived: restore
+it first"). Its own status isn't written when the venue is archived, so restoring the venue
+brings back exactly the halls that were active before. **Deleting a hall** (`204`) also deletes
+its layouts, their sections and seats; once events exist (M1 step 8), a hall any event uses can
+only be archived.
 
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
@@ -284,9 +309,11 @@ application/problem+json`:
 | `400` | a list query with a `status` other than `active` or `archived`, a `limit` that isn't a whole number from 1 to 100, or a `cursor` that isn't a `next_cursor` | "the request has invalid fields; see errors", with `field` `status`, `limit` or `cursor` |
 | `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "nmae"` or `location.latitude must be a number` |
 | `400` | an `If-Match` that isn't one ETag as the API sends it | "the If-Match header must be one ETag exactly as this API sent it, e.g. \"3\"" |
-| `404` | no venue has the id, or the id isn't a UUID | "venue not found" |
-| `409` | changing or archiving an archived venue, or creating a hall in one; restoring an active one | "venue is archived: restore it first" / "venue is not archived" |
-| `409` | creating a hall with a name that another active hall of the venue has (ignoring case) | "another hall of this venue already has this name" |
+| `404` | no venue has the id, or the id isn't a UUID (also for `/venues/{id}/halls`) | "venue not found" |
+| `404` | no hall has the id, or the id isn't a UUID | "hall not found" |
+| `409` | changing or archiving an archived venue, or creating, changing, archiving or restoring a hall in one; restoring an active venue | "venue is archived: restore it first" / "venue is not archived" |
+| `409` | changing or archiving an archived hall; restoring an active one | "hall is archived: restore it first" / "hall is not archived" |
+| `409` | creating, renaming or restoring a hall onto a name another active hall of the venue has (ignoring case) | "another hall of this venue already has this name" |
 | `412` | `If-Match` names a version that isn't the current one | "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
 | `415` | `Content-Type` isn't `application/json` (for PATCH also `application/merge-patch+json`) | what to send instead |

@@ -65,6 +65,12 @@ func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger, venue
 
 	hallRoutes := hallHandler{service: halls, logger: logger}
 	admin.POST("/venues/:id/halls", hallRoutes.create)
+	admin.GET("/venues/:id/halls", hallRoutes.list)
+	admin.GET("/halls/:id", hallRoutes.get)
+	admin.PATCH("/halls/:id", hallRoutes.update)
+	admin.DELETE("/halls/:id", hallRoutes.delete)
+	admin.POST("/halls/:id/archive", hallRoutes.archive)
+	admin.POST("/halls/:id/restore", hallRoutes.restore)
 
 	return router
 }

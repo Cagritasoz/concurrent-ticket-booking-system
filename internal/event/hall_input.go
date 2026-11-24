@@ -13,6 +13,12 @@ type HallInput struct {
 	Capacity    *int
 }
 
+// input returns the hall's changeable values, the starting point of an update, like
+// Venue.input.
+func (h Hall) input() HallInput {
+	return HallInput{Name: h.Name, Description: h.Description, Capacity: h.Capacity}
+}
+
 // clean returns the input as it will be stored, or a *ValidationError listing every broken rule.
 // Text is handled as in VenueInput.clean; the limits match the CHECKs in migration 2.
 func (in HallInput) clean() (HallInput, error) {

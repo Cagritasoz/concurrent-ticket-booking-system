@@ -27,13 +27,17 @@ func writeServiceError(c *gin.Context, logger *slog.Logger, err error) {
 	switch {
 	case errors.As(err, &invalid): // errors.As also fills invalid, so its Fields can be sent
 		writeValidationProblem(c, invalid.Fields)
-	case errors.Is(err, event.ErrVenueNotFound):
+	case errors.Is(err, event.ErrVenueNotFound), errors.Is(err, event.ErrHallNotFound):
 		writeProblem(c, http.StatusNotFound, err.Error())
 	case errors.Is(err, event.ErrVersionMismatch):
 		writeProblem(c, http.StatusPreconditionFailed, versionMismatchDetail)
 	case errors.Is(err, event.ErrVenueArchived):
 		writeProblem(c, http.StatusConflict, "venue is archived: restore it first")
 	case errors.Is(err, event.ErrVenueNotArchived):
+		writeProblem(c, http.StatusConflict, err.Error())
+	case errors.Is(err, event.ErrHallArchived):
+		writeProblem(c, http.StatusConflict, "hall is archived: restore it first")
+	case errors.Is(err, event.ErrHallNotArchived):
 		writeProblem(c, http.StatusConflict, err.Error())
 	case errors.Is(err, event.ErrHallNameTaken):
 		writeProblem(c, http.StatusConflict, "another hall of this venue already has this name")

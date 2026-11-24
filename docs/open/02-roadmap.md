@@ -22,12 +22,12 @@
   admin-only ticket types, per-event limits, the event lifecycle with the venue's confirmation,
   hall reservation times, a sales closing time and section positions). The whole domain,
   including what later milestones add, is mapped in [12 · Domain model](12-domain-model.md).
-- **In progress:** part 2 of M1, on `milestone/postgres-event-venue-tree`. Step 6b, halls end to
-  end: the hall queries are done, and creating a hall works end to end (`HallService.Create` and
-  `POST /api/v1/admin/venues/{id}/halls`). Step 6c's first layout queries exist; they don't use
-  the status and version yet.
-- **Next:** the rest of the hall service and endpoints (step 6b): read, list, update, archive,
-  restore, delete.
+- **In progress:** part 2 of M1, on `milestone/postgres-event-venue-tree`. Step 6b is done:
+  halls end to end (create, list a venue's halls, read, update, archive, restore, delete under
+  `/api/v1/admin`). Step 6c's first layout queries exist; they don't use the status and version
+  yet.
+- **Next:** step 6c, layouts end to end, built like halls one level down, with a `draft` status
+  before `active`.
 
 Each milestone is developed on branches named `milestone/{milestone name}`, branched from `main`.
 A large milestone merges in parts, each on its own branch `milestone/{milestone name}-{part}`
@@ -134,7 +134,7 @@ standing section.
 | 5b | **First REST endpoints:** venue CRUD handlers under `/api/v1/admin`; strict JSON decoding; RFC 9457 Problem Details as the one error format; error → HTTP status mapping (validation errors are 400); `httptest` tests | `@RestController` + `@ControllerAdvice` + `ProblemDetail` + `MockMvc` | Done |
 | 5c | **Venue lifecycle and optimistic locking:** `status` (active / archived) with archive and restore as compare-and-set requests, the list filtered by status; `version` sent as the `ETag`, a required `If-Match` on every change (412 / 428); DELETE only with `If-Match`; the venue's capacity removed (halls have it) | `@Version` + `ETag` / `If-Match` + soft delete | Done |
 | 6a | **Schema of everything M1 stores,** one migration per table, before any of it is built end to end, so later tables don't force changes to finished code: `halls` (a venue's rooms), `layouts` (a hall's setups), `sections` (seated, or standing with a capacity), `seats` (labels, positions and accessibility of a seated section's seats), `event_series` (groups events, such as a film's showings), `events` (one dated occurrence in a layout, never overlapping another in its hall), `ticket_tiers` (where a ticket is), `ticket_types` (who it is for) and `tier_prices` (what each type costs in each tier), `admin_holds` and `tickets` (one per seat or standing place of a tier, available, held or killed); names unique per parent among what isn't archived, the tree deleted with its parent, events and tickets keeping what they use from being deleted; statuses and versions as for venues; `passes`, `pass_prices` and `pass_events` (a product granting one ticket in each of several events of a series); tiers say how they are sold (`sold_as` seat or whole section, `sold_via` single, pass only or shared) | `@OneToMany(cascade = REMOVE)` child entities, written as Flyway migrations | Done |
-| 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | In progress (queries and create done) |
+| 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | Done |
 | 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | In progress (first queries done; status and version not used yet) |
 | 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | Not started |
 | 7 | **Seats end to end** (table from 6a): queries, service and endpoints for a seated section's seats, created in bulk by rows; a version but no status, like sections | Bulk insert + validation | Not started |
@@ -282,7 +282,7 @@ standing section.
   (`EventSeries`, `Event` with `SeriesID *uuid.UUID`, `Pass`, `PassPrice`, `PassEvent`, ...),
   which the queries of the next steps return. The design of all of it, and what later
   milestones add, is in [12 · Domain model](12-domain-model.md).
-- **Step 6b (in progress, queries and create done):** `internal/event/queries/halls.sql`, built like the
+- **Step 6b (done):** `internal/event/queries/halls.sql`, built like the
   venue queries: create, get, get-and-lock (`FOR UPDATE`), list a venue's halls with one status
   (all of them, by name ignoring case, then id, no paging), update (name, description, capacity;
   a hall never changes venue), archive and restore through one compare-and-set status query, and
@@ -304,6 +304,18 @@ standing section.
   every validation rule, each refusal, ten concurrent creates with one name have one winner and
   no 500s, a failing database), and the endpoint through the whole stack (201 body and headers,
   null optionals, 400 / 404 / 409 / 415 / unusable bodies, 500 without details).
+  **The rest end to end:** `HallService` gained Get, List (a venue's halls of one status, all at
+  once; an unknown venue is `ErrVenueNotFound`), Update, Archive, Restore and Delete, with
+  `ErrHallNotFound`, `ErrHallArchived` and `ErrHallNotArchived`. Every change runs in one
+  transaction that locks the venue `FOR SHARE` before the hall `FOR UPDATE` (parent before child,
+  so a change can't deadlock with the venue's delete; see 05 · Decisions) and refuses changes to a
+  hall of an archived venue (`ErrVenueArchived`); delete is one compare-and-set statement and
+  works in an archived venue too. Renaming or restoring onto a taken name is `ErrHallNameTaken`.
+  Endpoints: `GET /venues/{id}/halls`, `GET`, `PATCH` (JSON Merge Patch), `DELETE
+  /halls/{id}`, `POST /halls/{id}/archive` and `/restore`. Tests: the service against real
+  Postgres (each operation and refusal, ten concurrent updates from one version have one winner,
+  restoring onto a name taken meanwhile, a deterministic lock-order test that fails if the hall
+  is locked before the venue, a failing database) and every endpoint through the whole stack.
 - **Step 6c (in progress, first queries done):** `internal/event/queries/layouts.sql`: create,
   get, get-and-lock (`FOR UPDATE`), list a hall's layouts (all of them, by name ignoring case,
   then id, no paging), update (name and description; a layout never changes hall) and delete.

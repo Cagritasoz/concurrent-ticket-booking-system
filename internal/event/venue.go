@@ -1,5 +1,5 @@
-// Package event is the admin side of the system: venues so far; their halls, layouts, events,
-// ticket tiers and tickets follow in M1. Other packages (httpapi, later booking) use its services
+// Package event is the admin side of the system: venues and their halls so far; layouts,
+// events, ticket tiers and tickets follow in M1. Other packages (httpapi, later booking) use its services
 // and types, never its generated eventdb package.
 package event
 

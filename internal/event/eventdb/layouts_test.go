@@ -12,22 +12,11 @@ import (
 	"github.com/Cagritasoz/concurrent-ticket-booking-system/internal/platform/postgres"
 )
 
-// newHall stores a venue with one hall and returns the hall's id. Halls have no queries yet
-// (M1 step 6b), so the hall is inserted with plain SQL.
+// newHall stores a venue with one hall and returns the hall's id.
 func newHall(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	t.Helper()
-	venue, err := eventdb.New(pool).CreateVenue(t.Context(), minimalVenue("Zorlu PSM"))
-	if err != nil {
-		t.Fatalf("CreateVenue: %v", err)
-	}
-	var hallID uuid.UUID
-	err = pool.QueryRow(t.Context(),
-		`INSERT INTO halls (venue_id, name) VALUES ($1, 'Turkcell Stage') RETURNING id`, venue.ID,
-	).Scan(&hallID)
-	if err != nil {
-		t.Fatalf("insert hall: %v", err)
-	}
-	return hallID
+	q := eventdb.New(pool)
+	return createHall(t, q, createVenue(t, q, minimalVenue("Zorlu PSM")).ID, "Turkcell Stage").ID
 }
 
 // newLayout stores a layout of the hall with this name and returns it.

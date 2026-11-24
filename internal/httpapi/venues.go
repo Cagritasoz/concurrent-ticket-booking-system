@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -48,7 +47,7 @@ func (h venueHandler) get(c *gin.Context) {
 	// canceled if the client disconnects, which also cancels the database query.
 	venue, err := h.service.Get(c.Request.Context(), id)
 	if err != nil {
-		h.writeError(c, err)
+		writeServiceError(c, h.logger, err)
 		return
 	}
 	writeVenue(c, http.StatusOK, venue)
@@ -76,7 +75,7 @@ func (h venueHandler) create(c *gin.Context) {
 
 	venue, err := h.service.Create(c.Request.Context(), in)
 	if err != nil {
-		h.writeError(c, err)
+		writeServiceError(c, h.logger, err)
 		return
 	}
 	// c.FullPath() is the route's path pattern, here "/api/v1/admin/venues".
@@ -125,7 +124,7 @@ func (h venueHandler) list(c *gin.Context) {
 
 	page, err := h.service.List(c.Request.Context(), status, after, limit)
 	if err != nil {
-		h.writeError(c, err)
+		writeServiceError(c, h.logger, err)
 		return
 	}
 	c.JSON(http.StatusOK, toVenueListResponse(page))
@@ -157,7 +156,7 @@ func (h venueHandler) update(c *gin.Context) {
 	var patch venuePatch
 	if err := json.Unmarshal(body, &patch); err != nil {
 		// Can't happen for a body that passed the check above, so it would be our bug (500).
-		h.writeError(c, fmt.Errorf("decode venue patch: %w", err))
+		writeServiceError(c, h.logger, fmt.Errorf("decode venue patch: %w", err))
 		return
 	}
 
@@ -170,7 +169,7 @@ func (h venueHandler) update(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		h.writeError(c, err)
+		writeServiceError(c, h.logger, err)
 		return
 	}
 	writeVenue(c, http.StatusOK, venue)
@@ -202,7 +201,7 @@ func (h venueHandler) changeStatus(c *gin.Context, op func(context.Context, uuid
 	}
 	venue, err := op(c.Request.Context(), id, version)
 	if err != nil {
-		h.writeError(c, err)
+		writeServiceError(c, h.logger, err)
 		return
 	}
 	writeVenue(c, http.StatusOK, venue)
@@ -221,36 +220,11 @@ func (h venueHandler) delete(c *gin.Context) {
 		return
 	}
 	if err := h.service.Delete(c.Request.Context(), id, version); err != nil {
-		h.writeError(c, err)
+		writeServiceError(c, h.logger, err)
 		return
 	}
 	// Status only sets the code; Gin sends it when the handler returns, with nothing written.
 	c.Status(http.StatusNoContent)
-}
-
-// versionMismatchDetail is the 412's explanation, the same for every kind of object.
-const versionMismatchDetail = "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match"
-
-// writeError turns an error from the service into a response, like an @ExceptionHandler in a
-// @ControllerAdvice. Errors the module defines get their status; anything else is a 500 whose
-// cause is logged but never sent, since it may show internals (SQL, hosts).
-func (h venueHandler) writeError(c *gin.Context, err error) {
-	var invalid *event.ValidationError
-	switch {
-	case errors.As(err, &invalid): // errors.As also fills invalid, so its Fields can be sent
-		writeValidationProblem(c, invalid.Fields)
-	case errors.Is(err, event.ErrVenueNotFound):
-		writeProblem(c, http.StatusNotFound, err.Error())
-	case errors.Is(err, event.ErrVersionMismatch):
-		writeProblem(c, http.StatusPreconditionFailed, versionMismatchDetail)
-	case errors.Is(err, event.ErrVenueArchived):
-		writeProblem(c, http.StatusConflict, "venue is archived: restore it first")
-	case errors.Is(err, event.ErrVenueNotArchived):
-		writeProblem(c, http.StatusConflict, err.Error())
-	default: // Handle unexpected errors.
-		h.logger.ErrorContext(c.Request.Context(), "request failed", "error", err)
-		writeProblem(c, http.StatusInternalServerError, "")
-	}
 }
 
 // venueRequest is the JSON body of POST /venues. A missing field decodes as its zero value: ""

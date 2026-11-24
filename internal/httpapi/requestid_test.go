@@ -22,7 +22,7 @@ func getWithHeader(t *testing.T, path, requestIDValue string) (*httptest.Respons
 	if err != nil {
 		t.Fatalf("NewLogger: unexpected error: %v", err)
 	}
-	router := NewRouter(logger, &Readiness{}, &fakeDatabase{}, nil)
+	router := NewRouter(logger, &Readiness{}, &fakeDatabase{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	if requestIDValue != "" {

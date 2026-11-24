@@ -19,7 +19,7 @@ or 0 after a clean shutdown. `main` is the only place that calls `os.Exit`.
 4. **Postgres:** `postgres.NewPool` creates the connection pool and pings the database, allowing
    5 seconds. If it can't connect, `run` fails here, before the port is opened. A deferred `Close()`
    closes the pool last, after the HTTP server. Then it logs `connected to postgres`.
-5. **Services, readiness and router:** the module services on the pool (`event.NewVenueService`),
+5. **Services, readiness and router:** the module services on the pool (`event.NewVenueService`, `event.NewHallService`),
    a `httpapi.Readiness` (starts as not ready) and `httpapi.NewRouter`, which gets the services
    and also the pool for the `/readyz` check.
 6. **Listener:** `net.Listen("tcp", HTTP_ADDR)` opens the port. If the port is taken, `run` fails
@@ -121,6 +121,7 @@ Unknown routes get Gin's default `404 page not found`.
 | POST | `/api/v1/admin/venues/{id}/archive` | `200` with the archived venue and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a venue.** Needs `If-Match`. |
 | POST | `/api/v1/admin/venues/{id}/restore` | `200` with the active venue and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived venue.** Needs `If-Match`. |
 | DELETE | `/api/v1/admin/venues/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a venue.** Needs `If-Match`. |
+| POST | `/api/v1/admin/venues/{id}/halls` | `201` with the hall, its `ETag` and a `Location` header (`/api/v1/admin/halls/{hall id}`), or `400` / `404` / `409` / `413` / `415` | **Create a hall** in an active venue. |
 
 ### Admin API
 
@@ -255,6 +256,21 @@ venues can be deleted while nothing uses them; once events exist (M1 step 8), a 
 event uses can only be archived. The venue's halls, their layouts and sections are deleted with
 it, by the database (`ON DELETE CASCADE`).
 
+**Creating a hall:** `POST /api/v1/admin/venues/{id}/halls` with a body such as
+`{"name": "Turkcell Stage", "description": "Entrance through Gate B.", "capacity": 2500}`.
+`name` is required (at most 200 characters), `description` is optional (at most 5000), and
+`capacity` is optional (a whole number from 1 to 2147483647; leave it out or send `null` if it
+isn't known). Text is trimmed and blank optional text is stored as `null`, as for venues. The
+answer is `201` with the hall (`id`, `venue_id`, `name`, `description`, `capacity`, `status`
+`active`, `version` 1, `created_at`, `updated_at`), its `ETag`, and a `Location` of
+`/api/v1/admin/halls/{hall id}`: once created, a hall is named by its own id, without its venue
+(the route that reads it comes later in step 6b). The body is checked first (400). Then, in one
+transaction, the venue is read with a shared lock (`FOR SHARE`): an unknown venue is a 404 and an
+archived one a 409. The lock keeps the venue from being archived until the hall is committed,
+while other halls can still be created in it at the same time. A name that another active hall
+of the venue has, ignoring case, is a 409. The database's unique index decides this, so of two
+requests with one name at the same moment, exactly one wins.
+
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
 
@@ -269,7 +285,8 @@ application/problem+json`:
 | `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "nmae"` or `location.latitude must be a number` |
 | `400` | an `If-Match` that isn't one ETag as the API sends it | "the If-Match header must be one ETag exactly as this API sent it, e.g. \"3\"" |
 | `404` | no venue has the id, or the id isn't a UUID | "venue not found" |
-| `409` | changing or archiving an archived venue; restoring an active one | "venue is archived: restore it first" / "venue is not archived" |
+| `409` | changing or archiving an archived venue, or creating a hall in one; restoring an active one | "venue is archived: restore it first" / "venue is not archived" |
+| `409` | creating a hall with a name that another active hall of the venue has (ignoring case) | "another hall of this venue already has this name" |
 | `412` | `If-Match` names a version that isn't the current one | "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
 | `415` | `Content-Type` isn't `application/json` (for PATCH also `application/merge-patch+json`) | what to send instead |

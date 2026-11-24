@@ -128,6 +128,41 @@ func (q *Queries) GetVenue(ctx context.Context, id uuid.UUID) (Venue, error) {
 	return i, err
 }
 
+const getVenueForShare = `-- name: GetVenueForShare :one
+SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at FROM venues
+WHERE id = $1
+FOR SHARE
+`
+
+// GetVenueForShare is GetVenue that also takes a shared lock on the row until the transaction
+// ends. Creating a hall reads its venue this way to check it is active: other transactions can
+// still read the venue and take shared locks too (two halls created at once don't wait for each
+// other), but archiving, updating or deleting the venue waits until this transaction ends. So
+// the venue can't be archived between the check and the insert. Use it in postgres.WithTx.
+func (q *Queries) GetVenueForShare(ctx context.Context, id uuid.UUID) (Venue, error) {
+	row := q.db.QueryRow(ctx, getVenueForShare, id)
+	var i Venue
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.City,
+		&i.Region,
+		&i.PostalCode,
+		&i.CountryCode,
+		&i.Latitude,
+		&i.Longitude,
+		&i.Timezone,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getVenueForUpdate = `-- name: GetVenueForUpdate :one
 SELECT id, name, description, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, timezone, status, version, created_at, updated_at FROM venues
 WHERE id = $1

@@ -28,7 +28,7 @@ import (
 // real VenueService and a real Postgres. Only the network is left out (httptest), like
 // @SpringBootTest with MockMvc.
 
-// newVenueRouter returns a router with a real VenueService on a fresh migrated database, the
+// newVenueRouter returns a router with the real services on a fresh migrated database, the
 // pool (to insert test data or break the database) and the buffer its JSON logs go to.
 func newVenueRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *bytes.Buffer) {
 	t.Helper()
@@ -43,7 +43,7 @@ func newVenueRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *bytes.Buffer) {
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
 	}
-	return NewRouter(logger, &Readiness{}, pool, event.NewVenueService(pool)), pool, &logs
+	return NewRouter(logger, &Readiness{}, pool, event.NewVenueService(pool), event.NewHallService(pool)), pool, &logs
 }
 
 // insertVenue stores a venue with the generated query, so the read tests don't depend on POST.

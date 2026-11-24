@@ -26,6 +26,16 @@ SELECT * FROM venues
 WHERE id = @id
 FOR UPDATE;
 
+-- name: GetVenueForShare :one
+-- GetVenueForShare is GetVenue that also takes a shared lock on the row until the transaction
+-- ends. Creating a hall reads its venue this way to check it is active: other transactions can
+-- still read the venue and take shared locks too (two halls created at once don't wait for each
+-- other), but archiving, updating or deleting the venue waits until this transaction ends. So
+-- the venue can't be archived between the check and the insert. Use it in postgres.WithTx.
+SELECT * FROM venues
+WHERE id = @id
+FOR SHARE;
+
 -- name: ListVenues :many
 -- ListVenues returns one page of the venues with this status, sorted by name, with id deciding
 -- between equal names. It is keyset pagination: pass the name and id of the last venue of the

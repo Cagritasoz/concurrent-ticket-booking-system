@@ -27,7 +27,7 @@ type CreateHallParams struct {
 // CreateHall inserts a hall of a venue and returns it. Postgres fills in id, status (active),
 // version (1), created_at and updated_at. An unknown venue breaks halls_venue_id_fkey, and a name
 // another hall of the venue uses (ignoring case, archived halls not counted) breaks
-// halls_venue_id_name_key; the caller recognises both by name. Run it after GetVenueForShare in
+// halls_venue_id_name_key; the caller recognizes both by name. Run it after GetVenueForShare in
 // the same transaction, which checks the venue is active and keeps it so until the commit.
 func (q *Queries) CreateHall(ctx context.Context, arg CreateHallParams) (Hall, error) {
 	row := q.db.QueryRow(ctx, createHall,

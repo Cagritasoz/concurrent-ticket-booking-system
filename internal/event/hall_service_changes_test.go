@@ -195,6 +195,11 @@ func TestHallServiceUpdate_RefusalsStoreNothing(t *testing.T) {
 	if _, err := service.Update(t.Context(), hall.ID, 1, renameTo("X")); !errors.Is(err, event.ErrVenueArchived) {
 		t.Errorf("archived venue: got %v, want ErrVenueArchived", err)
 	}
+	// Even with an old version: reading the hall again wouldn't help, so the archived venue is
+	// the answer.
+	if _, err := service.Update(t.Context(), hall.ID, 2, renameTo("X")); !errors.Is(err, event.ErrVenueArchived) {
+		t.Errorf("archived venue, other version: got %v, want ErrVenueArchived", err)
+	}
 	checkHallUnchanged(t, service, hall)
 }
 

@@ -23,9 +23,12 @@ type CreateLayoutParams struct {
 	Description *string
 }
 
-// CreateLayout inserts a layout of a hall and returns it. Postgres fills in id, created_at and
-// updated_at. An unknown hall breaks layouts_hall_id_fkey, and a name the hall already uses
-// (ignoring case) breaks layouts_hall_id_name_key; the caller recognises both by name.
+// CreateLayout inserts a layout of a hall and returns it. Postgres fills in id, status (draft),
+// version (1), created_at and updated_at. An unknown hall breaks layouts_hall_id_fkey, and a name
+// another layout of the hall uses (ignoring case, archived layouts not counted) breaks
+// layouts_hall_id_name_key; the caller recognizes both by name. Run it after GetVenueForShare
+// and GetHallForShare in the same transaction, which check the venue and the hall are active and
+// keep them so until the commit.
 func (q *Queries) CreateLayout(ctx context.Context, arg CreateLayoutParams) (Layout, error) {
 	row := q.db.QueryRow(ctx, createLayout, arg.HallID, arg.Name, arg.Description)
 	var i Layout
@@ -44,13 +47,20 @@ func (q *Queries) CreateLayout(ctx context.Context, arg CreateLayoutParams) (Lay
 
 const deleteLayout = `-- name: DeleteLayout :execrows
 DELETE FROM layouts
-WHERE id = $1
+WHERE id = $1 AND version = $2
 `
 
-// DeleteLayout returns the number of deleted rows: 0 means no layout had this id. The layout's
-// sections are deleted with it (ON DELETE CASCADE).
-func (q *Queries) DeleteLayout(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteLayout, id)
+type DeleteLayoutParams struct {
+	ID      uuid.UUID
+	Version int32
+}
+
+// DeleteLayout deletes the layout if it still has the expected version and returns the number of
+// deleted rows: 0 means no layout has this id or its version is different. Its sections and
+// their seats are deleted with it (ON DELETE CASCADE). A layout an event uses can't be deleted
+// (events_layout_id_fkey, a foreign key error); archive it instead.
+func (q *Queries) DeleteLayout(ctx context.Context, arg DeleteLayoutParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteLayout, arg.ID, arg.Version)
 	if err != nil {
 		return 0, err
 	}
@@ -62,7 +72,7 @@ SELECT id, hall_id, name, description, status, version, created_at, updated_at F
 WHERE id = $1
 `
 
-// GetLayout returns pgx.ErrNoRows if no layout has this id.
+// GetLayout returns pgx.ErrNoRows if no layout has this id. It returns archived layouts too.
 func (q *Queries) GetLayout(ctx context.Context, id uuid.UUID) (Layout, error) {
 	row := q.db.QueryRow(ctx, getLayout, id)
 	var i Layout
@@ -86,7 +96,7 @@ FOR UPDATE
 `
 
 // GetLayoutForUpdate is GetLayout that also locks the row until the transaction ends, like
-// GetVenueForUpdate. Use it in postgres.WithTx.
+// GetVenueForUpdate. Use it in postgres.WithTx, after locking the venue and the hall.
 func (q *Queries) GetLayoutForUpdate(ctx context.Context, id uuid.UUID) (Layout, error) {
 	row := q.db.QueryRow(ctx, getLayoutForUpdate, id)
 	var i Layout
@@ -103,19 +113,42 @@ func (q *Queries) GetLayoutForUpdate(ctx context.Context, id uuid.UUID) (Layout,
 	return i, err
 }
 
+const layoutHasSections = `-- name: LayoutHasSections :one
+SELECT EXISTS (
+    SELECT 1 FROM sections WHERE layout_id = $1
+)
+`
+
+// LayoutHasSections reports whether the layout has at least one section: activating a layout
+// needs one, since an event is sold in its sections. sections_layout_id_name_key starts with
+// layout_id, so it finds the first section without reading the others. Run it after
+// GetLayoutForUpdate: section changes lock their layout first, so none can be added or deleted
+// between this check and the commit.
+func (q *Queries) LayoutHasSections(ctx context.Context, layoutID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, layoutHasSections, layoutID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listLayouts = `-- name: ListLayouts :many
 SELECT id, hall_id, name, description, status, version, created_at, updated_at FROM layouts
-WHERE hall_id = $1
+WHERE hall_id = $1 AND status = $2
 ORDER BY lower(name), id
 `
 
-// ListLayouts returns every layout of a hall, sorted by name ignoring case, and an empty slice
-// for a hall without layouts (or with an unknown id: check the hall to tell them apart). There
-// is no paging, since a hall has only a few layouts. Archived layouts can repeat a name, so id
-// breaks ties and keeps the order the same on every call. The layouts_hall_id_idx index finds
-// the hall's layouts; sorting a few rows needs no index.
-func (q *Queries) ListLayouts(ctx context.Context, hallID uuid.UUID) ([]Layout, error) {
-	rows, err := q.db.Query(ctx, listLayouts, hallID)
+type ListLayoutsParams struct {
+	HallID uuid.UUID
+	Status string
+}
+
+// ListLayouts returns the layouts of a hall with this status, sorted by name ignoring case, and
+// an empty slice when there are none (or the hall id is unknown: check the hall to tell them
+// apart). There is no paging, since a hall has only a few layouts. Archived layouts can repeat a
+// name, so id breaks ties and keeps the order the same on every call. The layouts_hall_id_idx
+// index finds the hall's layouts; sorting a few rows needs no index.
+func (q *Queries) ListLayouts(ctx context.Context, arg ListLayoutsParams) ([]Layout, error) {
+	rows, err := q.db.Query(ctx, listLayouts, arg.HallID, arg.Status)
 	if err != nil {
 		return nil, err
 	}
@@ -143,12 +176,56 @@ func (q *Queries) ListLayouts(ctx context.Context, hallID uuid.UUID) ([]Layout, 
 	return items, nil
 }
 
+const setLayoutStatus = `-- name: SetLayoutStatus :one
+UPDATE layouts SET
+    status = $1,
+    version = version + 1,
+    updated_at = now()
+WHERE id = $2 AND version = $3 AND status = $4
+RETURNING id, hall_id, name, description, status, version, created_at, updated_at
+`
+
+type SetLayoutStatusParams struct {
+	ToStatus   string
+	ID         uuid.UUID
+	Version    int32
+	FromStatus string
+}
+
+// SetLayoutStatus moves a layout from one status to another (activate, archive, restore) and adds
+// 1 to its version, if the layout still has the expected version and the from status (compare
+// and set), like SetHallStatus. Which moves are allowed is the service's rule; the query only
+// refuses a row that changed meanwhile. pgx.ErrNoRows means no row matched; read the layout to
+// find out why. Restoring can break layouts_hall_id_name_key: another layout of the hall may
+// have taken the name while this one was archived.
+func (q *Queries) SetLayoutStatus(ctx context.Context, arg SetLayoutStatusParams) (Layout, error) {
+	row := q.db.QueryRow(ctx, setLayoutStatus,
+		arg.ToStatus,
+		arg.ID,
+		arg.Version,
+		arg.FromStatus,
+	)
+	var i Layout
+	err := row.Scan(
+		&i.ID,
+		&i.HallID,
+		&i.Name,
+		&i.Description,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateLayout = `-- name: UpdateLayout :one
 UPDATE layouts SET
     name = $1,
     description = $2,
+    version = version + 1,
     updated_at = now()
-WHERE id = $3
+WHERE id = $3 AND version = $4 AND status <> 'archived'
 RETURNING id, hall_id, name, description, status, version, created_at, updated_at
 `
 
@@ -156,13 +233,22 @@ type UpdateLayoutParams struct {
 	Name        string
 	Description *string
 	ID          uuid.UUID
+	Version     int32
 }
 
-// UpdateLayout replaces every changeable column and returns pgx.ErrNoRows if no layout has this
-// id. A layout stays in its hall, so hall_id can't change. A name another layout of the hall
-// uses breaks layouts_hall_id_name_key.
+// UpdateLayout replaces every changeable column of a draft or active layout and adds 1 to its
+// version, if the layout still has the version the change was based on (compare and set). A
+// layout stays in its hall, so hall_id can't change. pgx.ErrNoRows means no row matched: no
+// layout has this id, it is archived, or its version is different. Run it after
+// GetLayoutForUpdate in the same transaction, which tells those cases apart. A name another
+// layout of the hall uses breaks layouts_hall_id_name_key.
 func (q *Queries) UpdateLayout(ctx context.Context, arg UpdateLayoutParams) (Layout, error) {
-	row := q.db.QueryRow(ctx, updateLayout, arg.Name, arg.Description, arg.ID)
+	row := q.db.QueryRow(ctx, updateLayout,
+		arg.Name,
+		arg.Description,
+		arg.ID,
+		arg.Version,
+	)
 	var i Layout
 	err := row.Scan(
 		&i.ID,

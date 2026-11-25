@@ -20,6 +20,16 @@ SELECT * FROM halls
 WHERE id = @id
 FOR UPDATE;
 
+-- name: GetHallForShare :one
+-- GetHallForShare is GetHall that also takes a shared lock on the row until the transaction
+-- ends, like GetVenueForShare. A change to one of the hall's layouts reads the hall this way
+-- (after GetVenueForShare, the parent before the child) to check it is active: layouts of one
+-- hall can still be changed at the same time, but archiving, updating or deleting the hall waits
+-- until this transaction ends. Use it in postgres.WithTx.
+SELECT * FROM halls
+WHERE id = @id
+FOR SHARE;
+
 -- name: ListHalls :many
 -- ListHalls returns the halls of a venue with this status, sorted by name ignoring case, and an
 -- empty slice when there are none (or the venue id is unknown: check the venue to tell them

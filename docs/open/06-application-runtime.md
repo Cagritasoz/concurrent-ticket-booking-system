@@ -291,8 +291,10 @@ body is an object so paging could be added without breaking clients.
 
 **A hall of an archived venue counts as archived**, whatever its own status says: it can be
 read, listed and deleted, but PATCH, archive and restore are a 409 ("venue is archived: restore
-it first"). Its own status isn't written when the venue is archived, so restoring the venue
-brings back exactly the halls that were active before. **Deleting a hall** (`204`) also deletes
+it first"), even when `If-Match` is also out of date: the ETag covers only the hall's own
+values (archiving the venue doesn't change it), so reading the hall again wouldn't help. Its own
+status isn't written when the venue is archived, so restoring the venue brings back exactly the
+halls that were active before. **Deleting a hall** (`204`) also deletes
 its layouts, their sections and seats; once events exist (M1 step 8), a hall any event uses can
 only be archived.
 
@@ -321,7 +323,8 @@ application/problem+json`:
 | `500` | anything unexpected, e.g. the database fails | none; the cause is logged as `request failed` at ERROR, with the request ID |
 
 The checks run in this order: the id (404), then `If-Match` (428 / 400), then the body (415, 413,
-400), then the service (404, 412, 409, 400). A missing `location.latitude` or
+400), then the service (404, 412, 409, 400; for a hall, an archived venue's 409 comes before
+the 412). A missing `location.latitude` or
 `location.longitude` is checked in the handler, before the service, so it is reported on its
 own, before the other field problems. The `/healthz` and `/readyz` bodies, Gin's
 `404 page not found` for unknown routes and the recovery middleware's 500 don't use this format yet.

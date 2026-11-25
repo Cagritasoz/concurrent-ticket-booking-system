@@ -212,11 +212,17 @@ func (s *HallService) setStatus(ctx context.Context, id uuid.UUID, version int, 
 //
 //  1. Read the hall without a lock, only to learn its venue. A hall never changes venue, so the
 //     venue id can't go stale.
-//  2. Lock the venue (FOR SHARE), the parent before the child (see HallService).
+//  2. Lock the venue (FOR SHARE), the parent before the child (see HallService), and stop with
+//     ErrVenueArchived if it is archived. The lock keeps it so until the commit.
 //  3. Lock the hall (FOR UPDATE) and read it again: it may have changed before the lock.
-//  4. The checks: no hall (ErrHallNotFound), another version (ErrVersionMismatch), an archived
-//     venue (ErrVenueArchived). The version comes before the venue, as in VenueService.Update:
-//     a caller with an old version should read the hall again first.
+//  4. Check the version (ErrVersionMismatch).
+//
+// An archived venue is refused before the version is checked. The version (the ETag) covers the
+// hall's own values only; archiving the venue doesn't change it. So a caller with an old version
+// would read the hall again and still be refused: the archived venue is the answer that helps.
+// It also stops before the hall is locked. The hall's own status comes after the version, as in
+// VenueService.Update: archiving the hall changes its version, so a caller who missed that
+// should read it again first.
 //
 // fn then checks the hall's own status and makes the change.
 func (s *HallService) change(ctx context.Context, id uuid.UUID, version int,
@@ -240,6 +246,10 @@ func (s *HallService) change(ctx context.Context, id uuid.UUID, version int,
 		if err != nil {
 			return fmt.Errorf("lock venue %s: %w", row.VenueID, err)
 		}
+		if VenueStatus(venue.Status) == VenueArchived {
+			return ErrVenueArchived
+		}
+
 		row, err = q.GetHallForUpdate(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrHallNotFound // deleted between the first read and the lock
@@ -247,12 +257,8 @@ func (s *HallService) change(ctx context.Context, id uuid.UUID, version int,
 		if err != nil {
 			return fmt.Errorf("lock hall %s: %w", id, err)
 		}
-
 		if row.Version != expected {
 			return ErrVersionMismatch
-		}
-		if VenueStatus(venue.Status) == VenueArchived {
-			return ErrVenueArchived
 		}
 
 		row, err = fn(q, row)

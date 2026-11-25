@@ -464,6 +464,69 @@ func TestGetVenueForShare_ArchivingWaitsUntilTheCommit(t *testing.T) {
 	}
 }
 
+// GetHallForShare is how a change to a layout checks its hall is active, as GetVenueForShare is
+// for halls: a second shared lock is granted at once (two layouts of the hall changed at once),
+// but archiving the hall waits until the first transaction ends.
+func TestGetHallForShare_ArchivingWaitsUntilTheCommit(t *testing.T) {
+	pool := newPool(t)
+	q := eventdb.New(pool)
+	hall := createHall(t, q, createVenue(t, q, minimalVenue("Zorlu PSM")).ID, "Studio")
+
+	holder, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(t.Context()) }() // a no-op once committed
+	if _, err := eventdb.New(holder).GetHallForShare(t.Context(), hall.ID); err != nil {
+		t.Fatalf("GetHallForShare: %v", err)
+	}
+
+	// other runs fn in its own transaction that waits at most 100 ms for a lock.
+	other := func(fn func(q *eventdb.Queries) error) error {
+		return postgres.WithTx(t.Context(), pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(t.Context(), `SET LOCAL lock_timeout = '100ms'`); err != nil {
+				return err
+			}
+			return fn(eventdb.New(tx))
+		})
+	}
+	archive := func(q *eventdb.Queries) error {
+		_, err := q.SetHallStatus(t.Context(), eventdb.SetHallStatusParams{
+			ID: hall.ID, Version: hall.Version, FromStatus: "active", ToStatus: "archived",
+		})
+		return err
+	}
+
+	err = other(func(q *eventdb.Queries) error {
+		_, err := q.GetHallForShare(t.Context(), hall.ID)
+		return err
+	})
+	if err != nil {
+		t.Errorf("a second shared lock: got %v, want it granted at once", err)
+	}
+
+	var pgErr *pgconn.PgError
+	if err := other(archive); !errors.As(err, &pgErr) || pgErr.Code != lockNotAvailable {
+		t.Errorf("archive while the shared lock is held: got %v, want SQLSTATE %s (it has to wait)",
+			err, lockNotAvailable)
+	}
+
+	if err := holder.Commit(t.Context()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := other(archive); err != nil {
+		t.Errorf("archive after the commit: %v", err)
+	}
+}
+
+func TestGetHallForShare_UnknownIDIsErrNoRows(t *testing.T) {
+	q := eventdb.New(newPool(t))
+
+	if _, err := q.GetHallForShare(t.Context(), uuid.New()); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("got %v, want pgx.ErrNoRows", err)
+	}
+}
+
 func TestGetVenueForShare_UnknownIDIsErrNoRows(t *testing.T) {
 	q := eventdb.New(newPool(t))
 

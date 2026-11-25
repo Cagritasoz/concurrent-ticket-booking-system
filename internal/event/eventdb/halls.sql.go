@@ -96,6 +96,34 @@ func (q *Queries) GetHall(ctx context.Context, id uuid.UUID) (Hall, error) {
 	return i, err
 }
 
+const getHallForShare = `-- name: GetHallForShare :one
+SELECT id, venue_id, name, description, capacity, status, version, created_at, updated_at FROM halls
+WHERE id = $1
+FOR SHARE
+`
+
+// GetHallForShare is GetHall that also takes a shared lock on the row until the transaction
+// ends, like GetVenueForShare. A change to one of the hall's layouts reads the hall this way
+// (after GetVenueForShare, the parent before the child) to check it is active: layouts of one
+// hall can still be changed at the same time, but archiving, updating or deleting the hall waits
+// until this transaction ends. Use it in postgres.WithTx.
+func (q *Queries) GetHallForShare(ctx context.Context, id uuid.UUID) (Hall, error) {
+	row := q.db.QueryRow(ctx, getHallForShare, id)
+	var i Hall
+	err := row.Scan(
+		&i.ID,
+		&i.VenueID,
+		&i.Name,
+		&i.Description,
+		&i.Capacity,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getHallForUpdate = `-- name: GetHallForUpdate :one
 SELECT id, venue_id, name, description, capacity, status, version, created_at, updated_at FROM halls
 WHERE id = $1

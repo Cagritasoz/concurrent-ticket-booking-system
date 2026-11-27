@@ -21,6 +21,18 @@ SELECT * FROM layouts
 WHERE id = @id
 FOR UPDATE;
 
+-- name: GetLayoutForShare :one
+-- GetLayoutForShare is GetLayout that also takes a shared lock on the row until the transaction
+-- ends, like GetHallForShare. A change to one of the layout's sections reads the layout this way
+-- (after the venue and the hall, the parent before the child) to check it is a draft: sections
+-- of one layout can still be changed at the same time, but activating, deactivating, archiving,
+-- updating or deleting the layout waits until this transaction ends. So the layout can't be
+-- activated between the check and the change, e.g. while its last section is deleted. Use it in
+-- postgres.WithTx.
+SELECT * FROM layouts
+WHERE id = @id
+FOR SHARE;
+
 -- name: ListLayouts :many
 -- ListLayouts returns the layouts of a hall with this status, sorted by name ignoring case, and
 -- an empty slice when there are none (or the hall id is unknown: check the hall to tell them

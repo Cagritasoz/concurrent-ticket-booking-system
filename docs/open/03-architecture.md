@@ -22,8 +22,8 @@
 │   │   ├── layout.go                # Layout, LayoutStatus (draft, active, archived), the layout errors, row → Layout
 │   │   ├── layout_input.go          # LayoutInput and its validation
 │   │   ├── layout_service.go        # LayoutService (Get, Create, List a hall's layouts by status, Update, Activate, Deactivate, Archive, Restore as a draft, Delete; every change locks the venue and the hall FOR SHARE before the layout FOR UPDATE)
-│   │   ├── queries/                 # the SQL sqlc reads: venues.sql, halls.sql, layouts.sql
-│   │   └── eventdb/                 # sqlc-generated (db.go, models.go with one struct per table; venues.sql.go, halls.sql.go, layouts.sql.go) + hand-written tests
+│   │   ├── queries/                 # the SQL sqlc reads: venues.sql, halls.sql, layouts.sql, sections.sql
+│   │   └── eventdb/                 # sqlc-generated (db.go, models.go with one struct per table; venues.sql.go, halls.sql.go, layouts.sql.go, sections.sql.go) + hand-written tests
 │   ├── platform/
 │   │   ├── postgres/                # connection pool (pgxpool), Migrator (golang-migrate), WithTx, constraint error checks
 │   │   │   └── pgtest/              # a fresh database per test on a Testcontainers Postgres (or TEST_DATABASE_URL)

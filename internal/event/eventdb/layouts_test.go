@@ -42,13 +42,12 @@ func setLayoutStatus(t *testing.T, q *eventdb.Queries, l eventdb.Layout, to stri
 	return moved
 }
 
-// addSection stores a standing section in the layout. There are no section queries yet (M1 step
-// 6d), so it is plain SQL.
+// addSection stores a standing section of 100 places in the layout, at position 1.
 func addSection(t *testing.T, pool *pgxpool.Pool, layoutID uuid.UUID, name string) {
 	t.Helper()
-	_, err := pool.Exec(t.Context(),
-		`INSERT INTO sections (layout_id, name, kind, capacity, position) VALUES ($1, $2, 'standing', 100, 1)`,
-		layoutID, name)
+	_, err := eventdb.New(pool).CreateSection(t.Context(), eventdb.CreateSectionParams{
+		LayoutID: layoutID, Name: name, Kind: "standing", Capacity: new(int32(100)), Position: 1,
+	})
 	if err != nil {
 		t.Fatalf("add section %q: %v", name, err)
 	}

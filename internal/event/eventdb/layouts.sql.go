@@ -89,6 +89,35 @@ func (q *Queries) GetLayout(ctx context.Context, id uuid.UUID) (Layout, error) {
 	return i, err
 }
 
+const getLayoutForShare = `-- name: GetLayoutForShare :one
+SELECT id, hall_id, name, description, status, version, created_at, updated_at FROM layouts
+WHERE id = $1
+FOR SHARE
+`
+
+// GetLayoutForShare is GetLayout that also takes a shared lock on the row until the transaction
+// ends, like GetHallForShare. A change to one of the layout's sections reads the layout this way
+// (after the venue and the hall, the parent before the child) to check it is a draft: sections
+// of one layout can still be changed at the same time, but activating, deactivating, archiving,
+// updating or deleting the layout waits until this transaction ends. So the layout can't be
+// activated between the check and the change, e.g. while its last section is deleted. Use it in
+// postgres.WithTx.
+func (q *Queries) GetLayoutForShare(ctx context.Context, id uuid.UUID) (Layout, error) {
+	row := q.db.QueryRow(ctx, getLayoutForShare, id)
+	var i Layout
+	err := row.Scan(
+		&i.ID,
+		&i.HallID,
+		&i.Name,
+		&i.Description,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getLayoutForUpdate = `-- name: GetLayoutForUpdate :one
 SELECT id, hall_id, name, description, status, version, created_at, updated_at FROM layouts
 WHERE id = $1

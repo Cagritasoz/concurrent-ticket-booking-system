@@ -27,7 +27,8 @@
   update, archive, restore, delete; layouts also activate, a draft with at least one section
   becoming active, deactivate, back to a draft so its sections can change, and restore as a
   draft).
-- **Next:** step 6d, sections end to end under a layout.
+- **Next:** step 6d, sections end to end under a layout. Its queries are done; the service and
+  the endpoints come next.
 
 Each milestone is developed on branches named `milestone/{milestone name}`, branched from `main`.
 A large milestone merges in parts, each on its own branch `milestone/{milestone name}-{part}`
@@ -136,7 +137,7 @@ standing section.
 | 6a | **Schema of everything M1 stores,** one migration per table, before any of it is built end to end, so later tables don't force changes to finished code: `halls` (a venue's rooms), `layouts` (a hall's setups), `sections` (seated, or standing with a capacity), `seats` (labels, positions and accessibility of a seated section's seats), `event_series` (groups events, such as a film's showings), `events` (one dated occurrence in a layout, never overlapping another in its hall), `ticket_tiers` (where a ticket is), `ticket_types` (who it is for) and `tier_prices` (what each type costs in each tier), `admin_holds` and `tickets` (one per seat or standing place of a tier, available, held or killed); names unique per parent among what isn't archived, the tree deleted with its parent, events and tickets keeping what they use from being deleted; statuses and versions as for venues; `passes`, `pass_prices` and `pass_events` (a product granting one ticket in each of several events of a series); tiers say how they are sold (`sold_as` seat or whole section, `sold_via` single, pass only or shared) | `@OneToMany(cascade = REMOVE)` child entities, written as Flyway migrations | Done |
 | 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | Done |
 | 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | Done |
-| 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | Not started |
+| 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | In progress (queries done) |
 | 7 | **Seats end to end** (table from 6a): queries, service and endpoints for a seated section's seats, created in bulk by rows; a version but no status, like sections | Bulk insert + validation | Not started |
 | 8 | **Events end to end** (tables from 6a): CRUD for draft events in an active layout (with the hall reservation, sales times and per-customer limit); delete only events that aren't announced; event series (create, rename, list a series' events by date, put an event in a series or take it out, delete an empty series); a venue that a confirmed event uses keeps its place: its `address` and `location` can no longer change (its name and description still can, e.g. a sponsor rename), so past events don't seem to have taken place somewhere else; a venue that moves is a new venue | Another `@RestController` + service | Not started |
 | 9 | **Ticket tiers, types and prices end to end** (tables from 6a): tiers (name, description, kind, an optional per-customer limit), the event's ticket types (public, or admin-only such as a "Comp" type), and the price of each type in each tier (integer minor units in the event's currency); giving a tier seats (whole sections or single seats) or standing quantities creates their tickets in bulk (`INSERT … SELECT`, `generate_series`), with the event locked; a tier sold as whole sections (boxes, tables) is given whole sections only, never split with another tier | Child entities + bulk inserts + validation rules | Not started |
@@ -350,6 +351,16 @@ standing section.
   service (every rule and refusal, ten concurrent updates with one winner, a deterministic
   lock-order test with the venue or the hall held, verified to fail when the layout or the hall
   is locked too early, a failing database) and every endpoint through the whole stack.
+- **Step 6d (in progress, queries done):** `internal/event/queries/sections.sql`: create, the
+  next position (one after the highest, 1 for the first), get, get-and-lock (`FOR UPDATE`), list
+  a layout's sections (by position, then name ignoring case, no paging), update (name, capacity
+  and position, compare-and-set on the version; a section never changes layout or kind) and a
+  delete that checks the version. `layouts.sql` gains `GetLayoutForShare`, the layout's shared
+  lock for section changes, after the venue's and the hall's. Tests against real Postgres check
+  each query, the constraint names the service will map (`sections_layout_id_fkey`,
+  `sections_layout_id_name_key`, `sections_capacity_only_standing`), the other CHECKs, and that
+  activating a layout waits while its shared lock is held. Still to come: `SectionService`, the
+  endpoints and their docs.
 
 ### Planned M1 endpoints
 

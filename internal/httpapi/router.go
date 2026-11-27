@@ -80,6 +80,7 @@ func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger,
 	admin.PATCH("/layouts/:id", layoutRoutes.update)
 	admin.DELETE("/layouts/:id", layoutRoutes.delete)
 	admin.POST("/layouts/:id/activate", layoutRoutes.activate)
+	admin.POST("/layouts/:id/deactivate", layoutRoutes.deactivate)
 	admin.POST("/layouts/:id/archive", layoutRoutes.archive)
 	admin.POST("/layouts/:id/restore", layoutRoutes.restore)
 

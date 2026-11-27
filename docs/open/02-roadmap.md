@@ -25,7 +25,8 @@
 - **In progress:** part 2 of M1, on `milestone/postgres-event-venue-tree`. Steps 6b and 6c are
   done: halls and layouts end to end under `/api/v1/admin` (create, list by status, read,
   update, archive, restore, delete; layouts also activate, a draft with at least one section
-  becoming active, and restore as a draft).
+  becoming active, deactivate, back to a draft so its sections can change, and restore as a
+  draft).
 - **Next:** step 6d, sections end to end under a layout.
 
 Each milestone is developed on branches named `milestone/{milestone name}`, branched from `main`.
@@ -338,12 +339,14 @@ standing section.
   400, 404, the 409s (archived hall, archived venue, both, taken name), 415, 500. **The rest end
   to end:** `LayoutService` gains Get, List (a hall's layouts of one status), Update (name and
   description of a draft or active layout), Activate (a draft with at least one section,
-  ErrLayoutHasNoSections otherwise), Archive (from draft or active), Restore (always as a draft)
+  ErrLayoutHasNoSections otherwise), Deactivate (active back to a draft, added after the review:
+  sections change only on a draft, and archive-then-restore was the only way back before),
+  Archive (from draft or active), Restore (always as a draft)
   and Delete (one compare-and-set statement, no parent lock, also in an archived hall or venue).
   The venue and hall checks of Create and of every change share one helper (`lockHall`); a
   change then locks the layout `FOR UPDATE` and checks its version, an archived venue or hall
   being refused before the version. Endpoints: `GET /halls/{id}/layouts`, `GET`, `PATCH` and
-  `DELETE /layouts/{id}`, `POST /layouts/{id}/activate`, `/archive` and `/restore`. Tests: the
+  `DELETE /layouts/{id}`, `POST /layouts/{id}/activate`, `/deactivate`, `/archive` and `/restore`. Tests: the
   service (every rule and refusal, ten concurrent updates with one winner, a deterministic
   lock-order test with the venue or the hall held, verified to fail when the layout or the hall
   is locked too early, a failing database) and every endpoint through the whole stack.
@@ -356,8 +359,8 @@ Paths are under `/api/v1/admin`. They are a plan and can change when each step i
 |---|---|---|
 | 5b, 5c | `POST /venues`, `GET /venues`, `GET /venues/{id}`, `PATCH /venues/{id}`, `POST /venues/{id}/archive`, `POST /venues/{id}/restore`, `DELETE /venues/{id}` | Manage venues |
 | 6b | `POST /venues/{id}/halls`, `GET /venues/{id}/halls`, `GET /halls/{id}`, `PATCH /halls/{id}`, `POST /halls/{id}/archive`, `POST /halls/{id}/restore`, `DELETE /halls/{id}` | Manage a venue's halls |
-| 6c | `POST /halls/{id}/layouts`, `GET /halls/{id}/layouts`, `GET /layouts/{id}`, `PATCH /layouts/{id}`, `POST /layouts/{id}/activate`, `POST /layouts/{id}/archive`, `POST /layouts/{id}/restore`, `DELETE /layouts/{id}` | Manage a hall's layouts |
-| 6d | `POST /layouts/{id}/sections`, `GET /layouts/{id}/sections`, `PATCH /sections/{id}`, `DELETE /sections/{id}` | Manage a layout's sections |
+| 6c | `POST /halls/{id}/layouts`, `GET /halls/{id}/layouts`, `GET /layouts/{id}`, `PATCH /layouts/{id}`, `POST /layouts/{id}/activate`, `POST /layouts/{id}/deactivate`, `POST /layouts/{id}/archive`, `POST /layouts/{id}/restore`, `DELETE /layouts/{id}` | Manage a hall's layouts |
+| 6d | `POST /layouts/{id}/sections`, `GET /layouts/{id}/sections`, `GET /sections/{id}`, `PATCH /sections/{id}`, `DELETE /sections/{id}` | Manage a draft layout's sections; a section's kind is chosen at creation and never changes |
 | 7 | `POST /sections/{id}/seats`, `GET /sections/{id}/seats`, `PATCH /seats/{id}`, `DELETE /seats/{id}` | Manage a seated section's seats; `POST` creates whole rows at once |
 | 8 | `POST /events`, `GET /events`, `GET /events/{id}`, `PATCH /events/{id}`, `DELETE /events/{id}` | Manage events; only drafts can be deleted |
 | 8 | `POST /series`, `GET /series/{id}`, `PATCH /series/{id}`, `GET /series/{id}/events`, `DELETE /series/{id}` | Manage event series; an event joins or leaves one through `series_id` in `PATCH /events/{id}`; only an empty series can be deleted |

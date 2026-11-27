@@ -229,15 +229,17 @@ func TestPatchLayout_Refusals(t *testing.T) {
 	}
 }
 
-// A draft is activated once it has a section; archiving works from active, and restoring brings
-// it back as a draft.
-func TestActivateArchiveAndRestoreLayout(t *testing.T) {
+// A draft is activated once it has a section and deactivated back to a draft; archiving works
+// from active, and restoring brings it back as a draft.
+func TestLayoutStatusFlow(t *testing.T) {
 	router, pool, _ := newVenueRouter(t)
 	layout := insertLayout(t, pool, newLayoutHall(t, pool).ID, "Concert")
 	path := layoutPath(layout.ID)
 
 	checkProblem(t, action(t, router, path, "activate", `"1"`), http.StatusConflict,
 		problemJSON(409, "layout has no sections: add one before activating it", path+"/activate"))
+	checkProblem(t, action(t, router, path, "deactivate", `"1"`), http.StatusConflict,
+		problemJSON(409, "layout is not active", path+"/deactivate"))
 
 	insertSection(t, pool, layout.ID, "Floor")
 	checkStatusAndVersion(t, action(t, router, path, "activate", `"1"`), "active", 2)
@@ -246,16 +248,19 @@ func TestActivateArchiveAndRestoreLayout(t *testing.T) {
 	checkProblem(t, action(t, router, path, "restore", `"2"`), http.StatusConflict,
 		problemJSON(409, "layout is not archived", path+"/restore"))
 
-	checkStatusAndVersion(t, action(t, router, path, "archive", `"2"`), "archived", 3)
+	checkStatusAndVersion(t, action(t, router, path, "deactivate", `"2"`), "draft", 3)
+	checkStatusAndVersion(t, action(t, router, path, "activate", `"3"`), "active", 4)
+
+	checkStatusAndVersion(t, action(t, router, path, "archive", `"4"`), "archived", 5)
 	const archived = "layout is archived: restore it first"
-	for _, name := range []string{"archive", "activate"} {
-		checkProblem(t, action(t, router, path, name, `"3"`), http.StatusConflict,
+	for _, name := range []string{"archive", "activate", "deactivate"} {
+		checkProblem(t, action(t, router, path, name, `"5"`), http.StatusConflict,
 			problemJSON(409, archived, path+"/"+name))
 	}
-	checkProblem(t, patch(t, router, path, `"3"`, `{"name": "X"}`), http.StatusConflict,
+	checkProblem(t, patch(t, router, path, `"5"`, `{"name": "X"}`), http.StatusConflict,
 		problemJSON(409, archived, path))
 
-	checkStatusAndVersion(t, action(t, router, path, "restore", `"3"`), "draft", 4)
+	checkStatusAndVersion(t, action(t, router, path, "restore", `"5"`), "draft", 6)
 }
 
 // Every status change needs If-Match, like PATCH.
@@ -263,7 +268,7 @@ func TestLayoutStatusChanges_NeedIfMatch(t *testing.T) {
 	router, pool, _ := newVenueRouter(t)
 	path := layoutPath(insertLayout(t, pool, newLayoutHall(t, pool).ID, "Concert").ID)
 
-	for _, name := range []string{"activate", "archive", "restore"} {
+	for _, name := range []string{"activate", "deactivate", "archive", "restore"} {
 		if rec := action(t, router, path, name, ""); rec.Code != http.StatusPreconditionRequired {
 			t.Errorf("%s without If-Match: got %d, want 428", name, rec.Code)
 		}
@@ -299,7 +304,7 @@ func TestChangeLayout_InAnArchivedHallOrVenueIs409(t *testing.T) {
 			for _, ifMatch := range []string{`"1"`, `"9"`} { // an old version gets the same answer
 				checkProblem(t, patch(t, router, path, ifMatch, `{"name": "X"}`), http.StatusConflict,
 					problemJSON(409, tt.detail, path))
-				for _, name := range []string{"activate", "archive"} {
+				for _, name := range []string{"activate", "deactivate", "archive"} {
 					checkProblem(t, action(t, router, path, name, ifMatch), http.StatusConflict,
 						problemJSON(409, tt.detail, path+"/"+name))
 				}

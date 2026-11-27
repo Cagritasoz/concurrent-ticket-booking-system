@@ -146,6 +146,12 @@ func (h layoutHandler) activate(c *gin.Context) {
 	h.changeStatus(c, h.service.Activate)
 }
 
+// deactivate handles POST /api/v1/admin/layouts/:id/deactivate of the version named in If-Match:
+// an active layout goes back to a draft, so its sections and seats can be changed.
+func (h layoutHandler) deactivate(c *gin.Context) {
+	h.changeStatus(c, h.service.Deactivate)
+}
+
 // archive handles POST /api/v1/admin/layouts/:id/archive of the version named in If-Match.
 func (h layoutHandler) archive(c *gin.Context) {
 	h.changeStatus(c, h.service.Archive)
@@ -157,7 +163,7 @@ func (h layoutHandler) restore(c *gin.Context) {
 	h.changeStatus(c, h.service.Restore)
 }
 
-// changeStatus is the shared body of activate, archive and restore, like hallHandler.changeStatus.
+// changeStatus is the shared body of activate, deactivate, archive and restore, like hallHandler.changeStatus.
 func (h layoutHandler) changeStatus(c *gin.Context, op func(context.Context, uuid.UUID, int) (event.Layout, error)) {
 	id, ok := layoutID(c)
 	if !ok {
@@ -195,7 +201,8 @@ func (h layoutHandler) delete(c *gin.Context) {
 
 // layoutRequest is the JSON body of POST /halls/{id}/layouts; PATCH /layouts/{id} checks its body
 // against it too. There is no status: a layout is created as a draft and changes status only
-// through its own requests (activate, archive, restore), and an unknown field is a 400.
+// through its own requests (activate, deactivate, archive, restore), and an unknown field is a
+// 400.
 type layoutRequest struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`

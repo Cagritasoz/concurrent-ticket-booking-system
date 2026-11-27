@@ -21,7 +21,7 @@
 │   │   ├── hall_service.go          # HallService (Get, Create, List a venue's halls by status, Update, Archive, Restore, Delete; every change locks the venue FOR SHARE before the hall FOR UPDATE)
 │   │   ├── layout.go                # Layout, LayoutStatus (draft, active, archived), the layout errors, row → Layout
 │   │   ├── layout_input.go          # LayoutInput and its validation
-│   │   ├── layout_service.go        # LayoutService (Get, Create, List a hall's layouts by status, Update, Activate, Archive, Restore as a draft, Delete; every change locks the venue and the hall FOR SHARE before the layout FOR UPDATE)
+│   │   ├── layout_service.go        # LayoutService (Get, Create, List a hall's layouts by status, Update, Activate, Deactivate, Archive, Restore as a draft, Delete; every change locks the venue and the hall FOR SHARE before the layout FOR UPDATE)
 │   │   ├── queries/                 # the SQL sqlc reads: venues.sql, halls.sql, layouts.sql
 │   │   └── eventdb/                 # sqlc-generated (db.go, models.go with one struct per table; venues.sql.go, halls.sql.go, layouts.sql.go) + hand-written tests
 │   ├── platform/

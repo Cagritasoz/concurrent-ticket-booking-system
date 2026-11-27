@@ -133,6 +133,7 @@ Unknown routes get Gin's default `404 page not found`.
 | GET | `/api/v1/admin/layouts/{id}` | `200` with the layout and its `ETag`, or `404` | **Read a layout**, archived ones too. |
 | PATCH | `/api/v1/admin/layouts/{id}` | `200` with the changed layout and its new `ETag`, or `400` / `404` / `409` / `412` / `413` / `415` / `428` | **Change a layout's name or description** (JSON Merge Patch), as a draft or active. Needs `If-Match`. |
 | POST | `/api/v1/admin/layouts/{id}/activate` | `200` with the active layout and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Activate a draft** that has at least one section. Needs `If-Match`. |
+| POST | `/api/v1/admin/layouts/{id}/deactivate` | `200` with the layout, a `draft` again, and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Move an active layout back to a draft**, to change its sections and seats. Needs `If-Match`. |
 | POST | `/api/v1/admin/layouts/{id}/archive` | `200` with the archived layout and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a layout**, a draft or active. Needs `If-Match`. |
 | POST | `/api/v1/admin/layouts/{id}/restore` | `200` with the layout, a `draft` again, and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived layout**, always as a draft. Needs `If-Match`. |
 | DELETE | `/api/v1/admin/layouts/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a layout** and its sections and seats. Needs `If-Match`. |
@@ -313,13 +314,18 @@ only be archived.
 unknown fields). What differs is the status, three of them:
 
 ```
-draft ──activate──> active        draft or active ──archive──> archived ──restore──> draft
+draft ──activate──> active ──deactivate──> draft        draft or active ──archive──> archived ──restore──> draft
 ```
 
 - **A new layout is a `draft`** (version 1): it is set up over many requests and no event can use
   it yet. **Activate** makes it `active`, so events can be created in it; it needs at least one
   section (409 "layout has no sections: add one before activating it"), and activating an active
   layout is a 409 "layout is already active".
+- **Sections and seats change only while the layout is a draft** (M1 steps 6d and 7), so an
+  active layout is always one that passed activate's checks. **Deactivate** takes an active
+  layout back to a draft to change them, and activate checks it again; deactivating a draft is a
+  409 "layout is not active". Once events exist (M1 step 8), a layout events use can't be
+  deactivated.
 - **Archive** works from a draft or an active layout. **Restore** always brings a layout back as
   a `draft`, whatever it was before: it is offered for events again only after a deliberate
   activate, which runs its checks again. An archived layout can't be changed, activated or
@@ -358,7 +364,7 @@ application/problem+json`:
 | `409` | changing or archiving an archived venue, or creating, changing, archiving or restoring a hall in one, or any change to a layout of one of its halls; restoring an active venue | "venue is archived: restore it first" / "venue is not archived" |
 | `409` | changing or archiving an archived hall, or creating or changing a layout in one; restoring an active one | "hall is archived: restore it first" / "hall is not archived" |
 | `409` | creating, renaming or restoring a hall onto a name another active hall of the venue has (ignoring case) | "another hall of this venue already has this name" |
-| `409` | changing, activating or archiving an archived layout; restoring a draft or active one; activating an active one | "layout is archived: restore it first" / "layout is not archived" / "layout is already active" |
+| `409` | changing, activating, deactivating or archiving an archived layout; restoring a draft or active one; activating an active one; deactivating a draft | "layout is archived: restore it first" / "layout is not archived" / "layout is already active" / "layout is not active" |
 | `409` | activating a layout without sections | "layout has no sections: add one before activating it" |
 | `409` | creating, renaming or restoring a layout onto a name another layout of the hall has (ignoring case; archived layouts don't count) | "another layout of this hall already has this name" |
 | `412` | `If-Match` names a version that isn't the current one | "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match" |

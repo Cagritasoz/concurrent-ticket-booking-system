@@ -16,11 +16,11 @@ import (
 // LayoutService holds the rules for layouts, like HallService for halls. It is safe for
 // concurrent use; one instance serves every request.
 //
-// Every change to a layout (Create, Update, Activate, Archive, Restore) locks the layout's venue
-// and then its hall with shared locks (FOR SHARE) and checks both are active: a layout of an
-// archived hall or venue counts as archived (see LayoutStatus). The locks follow the tree, venue
-// before hall before layout, for the reason given at HallService: the same order everywhere is
-// what keeps two transactions from deadlocking.
+// Every change to a layout (Create, Update, Activate, Deactivate, Archive, Restore) locks the
+// layout's venue and then its hall with shared locks (FOR SHARE) and checks both are active: a
+// layout of an archived hall or venue counts as archived (see LayoutStatus). The locks follow the
+// tree, venue before hall before layout, for the reason given at HallService: the same order
+// everywhere is what keeps two transactions from deadlocking.
 type LayoutService struct {
 	pool    *pgxpool.Pool
 	queries *eventdb.Queries
@@ -178,6 +178,25 @@ func (s *LayoutService) Activate(ctx context.Context, id uuid.UUID, version int)
 	})
 }
 
+// Deactivate moves an active layout back to a draft, so its sections and seats can be changed,
+// and returns it as stored; Activate then checks it again. It fails with ErrLayoutNotFound,
+// ErrVenueArchived, ErrHallArchived, ErrVersionMismatch, ErrLayoutArchived, or
+// ErrLayoutNotActive if it is a draft already.
+//
+// In the future, deactivating will be refused while events use the layout (M1 step 8): no
+// event can be in a draft layout.
+func (s *LayoutService) Deactivate(ctx context.Context, id uuid.UUID, version int) (Layout, error) {
+	return s.change(ctx, id, version, func(q *eventdb.Queries, row eventdb.Layout) (eventdb.Layout, error) {
+		switch LayoutStatus(row.Status) {
+		case LayoutArchived:
+			return eventdb.Layout{}, ErrLayoutArchived
+		case LayoutDraft:
+			return eventdb.Layout{}, ErrLayoutNotActive
+		}
+		return setLayoutStatus(ctx, q, row, LayoutDraft)
+	})
+}
+
 // Archive moves a draft or active layout to archived and returns it as stored. It fails with
 // ErrLayoutNotFound, ErrVenueArchived, ErrHallArchived, ErrVersionMismatch, or
 // ErrLayoutArchived if it already is.
@@ -205,7 +224,7 @@ func (s *LayoutService) Restore(ctx context.Context, id uuid.UUID, version int) 
 	})
 }
 
-// setLayoutStatus is the shared end of Activate, Archive and Restore: the compare-and-set status
+// setLayoutStatus is the shared end of Activate, Deactivate, Archive and Restore: the compare-and-set status
 // change, from the status the locked row has. The statement's own WHERE (id, version, from
 // status) stays as a guard that doesn't rely on this code.
 func setLayoutStatus(ctx context.Context, q *eventdb.Queries, row eventdb.Layout, to LayoutStatus) (eventdb.Layout, error) {

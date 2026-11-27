@@ -365,6 +365,46 @@ func TestLayoutServiceActivate_NeedsADraftWithASection(t *testing.T) {
 	checkLayoutUnchanged(t, tree.layouts, archived)
 }
 
+// Deactivate takes an active layout back to a draft, so its sections can be changed; Activate then
+// checks it again.
+func TestLayoutServiceDeactivate_MovesAnActiveLayoutBackToADraft(t *testing.T) {
+	tree, layout := newLayout(t, "Concert")
+	addSection(t, tree, layout.ID, "Floor")
+
+	if _, err := tree.layouts.Deactivate(t.Context(), layout.ID, 1); !errors.Is(err, event.ErrLayoutNotActive) {
+		t.Errorf("deactivate a draft: got %v, want ErrLayoutNotActive", err)
+	}
+	checkLayoutUnchanged(t, tree.layouts, layout)
+
+	active, err := tree.layouts.Activate(t.Context(), layout.ID, 1)
+	if err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if _, err := tree.layouts.Deactivate(t.Context(), layout.ID, 1); !errors.Is(err, event.ErrVersionMismatch) {
+		t.Errorf("old version: got %v, want ErrVersionMismatch", err)
+	}
+	draft, err := tree.layouts.Deactivate(t.Context(), layout.ID, active.Version)
+	if err != nil || draft.Status != event.LayoutDraft || draft.Version != 3 {
+		t.Fatalf("Deactivate: got %+v, %v; want a draft, version 3", draft, err)
+	}
+	checkLayoutUnchanged(t, tree.layouts, draft)
+
+	// It can be activated again: Activate's checks run on the draft as on any other.
+	if again, err := tree.layouts.Activate(t.Context(), layout.ID, draft.Version); err != nil || again.Status != event.LayoutActive {
+		t.Errorf("activate again: got %+v, %v; want active", again, err)
+	}
+
+	archived := addLayout(t, tree.layouts, tree.hall.ID, "Old stage")
+	archived, err = tree.layouts.Archive(t.Context(), archived.ID, archived.Version)
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if _, err := tree.layouts.Deactivate(t.Context(), archived.ID, archived.Version); !errors.Is(err, event.ErrLayoutArchived) {
+		t.Errorf("archived layout: got %v, want ErrLayoutArchived", err)
+	}
+	checkLayoutUnchanged(t, tree.layouts, archived)
+}
+
 // Archive works from a draft and from an active layout, and restore always brings it back as a
 // draft, so it is offered for events again only after a deliberate Activate.
 func TestLayoutServiceArchiveAndRestore_RestoreIsAlwaysADraft(t *testing.T) {
@@ -422,11 +462,19 @@ func TestLayoutServiceStatusChanges_InAnArchivedHallOrVenueAreRefused(t *testing
 	if err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
+	active := addLayout(t, tree.layouts, tree.hall.ID, "Basketball")
+	addSection(t, tree, active.ID, "Court side")
+	if active, err = tree.layouts.Activate(t.Context(), active.ID, active.Version); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
 
 	check := func(t *testing.T, want error) {
 		t.Helper()
 		if _, err := tree.layouts.Activate(t.Context(), draft.ID, draft.Version); !errors.Is(err, want) {
 			t.Errorf("activate: got %v, want %v", err, want)
+		}
+		if _, err := tree.layouts.Deactivate(t.Context(), active.ID, active.Version); !errors.Is(err, want) {
+			t.Errorf("deactivate: got %v, want %v", err, want)
 		}
 		if _, err := tree.layouts.Archive(t.Context(), draft.ID, draft.Version); !errors.Is(err, want) {
 			t.Errorf("archive: got %v, want %v", err, want)
@@ -435,6 +483,7 @@ func TestLayoutServiceStatusChanges_InAnArchivedHallOrVenueAreRefused(t *testing
 			t.Errorf("restore: got %v, want %v", err, want)
 		}
 		checkLayoutUnchanged(t, tree.layouts, draft)
+		checkLayoutUnchanged(t, tree.layouts, active)
 		checkLayoutUnchanged(t, tree.layouts, old)
 	}
 
@@ -494,13 +543,18 @@ func TestLayoutService_DatabaseFailureIsNoneOfTheModulesErrors(t *testing.T) {
 			return err
 		},
 		"Activate": func() error { _, err := tree.layouts.Activate(t.Context(), layout.ID, 1); return err },
-		"Archive":  func() error { _, err := tree.layouts.Archive(t.Context(), layout.ID, 1); return err },
-		"Restore":  func() error { _, err := tree.layouts.Restore(t.Context(), layout.ID, 1); return err },
-		"Delete":   func() error { return tree.layouts.Delete(t.Context(), layout.ID, 1) },
+		"Deactivate": func() error {
+			_, err := tree.layouts.Deactivate(t.Context(), layout.ID, 1)
+			return err
+		},
+		"Archive": func() error { _, err := tree.layouts.Archive(t.Context(), layout.ID, 1); return err },
+		"Restore": func() error { _, err := tree.layouts.Restore(t.Context(), layout.ID, 1); return err },
+		"Delete":  func() error { return tree.layouts.Delete(t.Context(), layout.ID, 1) },
 	}
 	moduleErrors := []error{
 		event.ErrLayoutNotFound, event.ErrLayoutArchived, event.ErrLayoutNotArchived,
-		event.ErrLayoutAlreadyActive, event.ErrLayoutHasNoSections, event.ErrLayoutNameTaken,
+		event.ErrLayoutAlreadyActive, event.ErrLayoutNotActive, event.ErrLayoutHasNoSections,
+		event.ErrLayoutNameTaken,
 		event.ErrHallNotFound, event.ErrHallArchived, event.ErrVenueArchived, event.ErrVersionMismatch,
 	}
 	for name, call := range calls {

@@ -44,7 +44,7 @@ func writeServiceError(c *gin.Context, logger *slog.Logger, err error) {
 		writeProblem(c, http.StatusConflict, "another hall of this venue already has this name")
 	case errors.Is(err, event.ErrLayoutArchived):
 		writeProblem(c, http.StatusConflict, "layout is archived: restore it first")
-	case errors.Is(err, event.ErrLayoutNotArchived), errors.Is(err, event.ErrLayoutAlreadyActive):
+	case errors.Is(err, event.ErrLayoutNotArchived), errors.Is(err, event.ErrLayoutAlreadyActive), errors.Is(err, event.ErrLayoutNotActive):
 		writeProblem(c, http.StatusConflict, err.Error())
 	case errors.Is(err, event.ErrLayoutHasNoSections):
 		writeProblem(c, http.StatusConflict, "layout has no sections: add one before activating it")

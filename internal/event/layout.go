@@ -20,6 +20,8 @@ var (
 	ErrLayoutNotArchived = errors.New("layout is not archived")
 	// ErrLayoutAlreadyActive: only a draft can be activated, and this layout already is active.
 	ErrLayoutAlreadyActive = errors.New("layout is already active")
+	// ErrLayoutNotActive: only an active layout can be deactivated, and this one is a draft.
+	ErrLayoutNotActive = errors.New("layout is not active")
 	// ErrLayoutHasNoSections: a layout needs at least one section to be activated, since an event
 	// is sold in its sections.
 	ErrLayoutHasNoSections = errors.New("layout has no sections")
@@ -30,13 +32,17 @@ var (
 
 // LayoutStatus is where a layout is in its life. Layouts are created as drafts.
 //
-//	draft  -> Activate -> active
-//	draft  -> Archive  -> archived
-//	active -> Archive  -> archived
-//	archived -> Restore -> draft
+//	draft  -> Activate   -> active
+//	active -> Deactivate -> draft
+//	draft  -> Archive    -> archived
+//	active -> Archive    -> archived
+//	archived -> Restore  -> draft
 //
 // A draft is being built: its sections and seats are added over many requests, and no event can
-// use it yet. Activating it (it needs at least one section) lets events be created in it.
+// use it yet. Activating it (it needs at least one section) lets events be created in it. Its
+// sections and seats change only while it is a draft, so an active layout is always one that
+// passed Activate's checks; to change one, Deactivate takes it back to a draft, and Activate
+// checks it again.
 // Restoring always brings a layout back as a draft, whatever it was before it was archived: it is
 // only offered for events again after a deliberate Activate, which runs its checks again.
 //

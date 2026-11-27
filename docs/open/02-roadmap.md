@@ -22,13 +22,11 @@
   admin-only ticket types, per-event limits, the event lifecycle with the venue's confirmation,
   hall reservation times, a sales closing time and section positions). The whole domain,
   including what later milestones add, is mapped in [12 · Domain model](12-domain-model.md).
-- **In progress:** part 2 of M1, on `milestone/postgres-event-venue-tree`. Step 6b is done:
-  halls end to end (create, list a venue's halls, read, update, archive, restore, delete under
-  `/api/v1/admin`). Step 6c has started: the layout queries now use the status and version
-  (list by status, compare-and-set update, status change and delete), plus `LayoutHasSections`
-  for activation and `GetHallForShare` for locking a layout's hall.
-- **Next:** step 6c, layouts end to end, built like halls one level down, with a `draft` status
-  before `active`.
+- **In progress:** part 2 of M1, on `milestone/postgres-event-venue-tree`. Steps 6b and 6c are
+  done: halls and layouts end to end under `/api/v1/admin` (create, list by status, read,
+  update, archive, restore, delete; layouts also activate, a draft with at least one section
+  becoming active, and restore as a draft).
+- **Next:** step 6d, sections end to end under a layout.
 
 Each milestone is developed on branches named `milestone/{milestone name}`, branched from `main`.
 A large milestone merges in parts, each on its own branch `milestone/{milestone name}-{part}`
@@ -136,10 +134,10 @@ standing section.
 | 5c | **Venue lifecycle and optimistic locking:** `status` (active / archived) with archive and restore as compare-and-set requests, the list filtered by status; `version` sent as the `ETag`, a required `If-Match` on every change (412 / 428); DELETE only with `If-Match`; the venue's capacity removed (halls have it) | `@Version` + `ETag` / `If-Match` + soft delete | Done |
 | 6a | **Schema of everything M1 stores,** one migration per table, before any of it is built end to end, so later tables don't force changes to finished code: `halls` (a venue's rooms), `layouts` (a hall's setups), `sections` (seated, or standing with a capacity), `seats` (labels, positions and accessibility of a seated section's seats), `event_series` (groups events, such as a film's showings), `events` (one dated occurrence in a layout, never overlapping another in its hall), `ticket_tiers` (where a ticket is), `ticket_types` (who it is for) and `tier_prices` (what each type costs in each tier), `admin_holds` and `tickets` (one per seat or standing place of a tier, available, held or killed); names unique per parent among what isn't archived, the tree deleted with its parent, events and tickets keeping what they use from being deleted; statuses and versions as for venues; `passes`, `pass_prices` and `pass_events` (a product granting one ticket in each of several events of a series); tiers say how they are sold (`sold_as` seat or whole section, `sold_via` single, pass only or shared) | `@OneToMany(cascade = REMOVE)` child entities, written as Flyway migrations | Done |
 | 6b | **Halls end to end:** queries, service and nested endpoints under a venue, built like venues (archive, restore, `If-Match`); creating a hall locks its venue to check it is active | Child entity repository, service + nested `@RestController` | Done |
-| 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | In progress (queries done) |
+| 6c | **Layouts end to end:** the same for layouts under a hall, with a `draft` status before `active` | The same, one level down | Done |
 | 6d | **Sections end to end:** queries, service and nested endpoints under a layout; a version but no status (sections belong to their layout's definition) | The same, one level down | Not started |
 | 7 | **Seats end to end** (table from 6a): queries, service and endpoints for a seated section's seats, created in bulk by rows; a version but no status, like sections | Bulk insert + validation | Not started |
-| 8 | **Events end to end** (tables from 6a): CRUD for draft events in an active layout (with the hall reservation, sales times and per-customer limit); delete only events that aren't announced; event series (create, rename, list a series' events by date, put an event in a series or take it out, delete an empty series) | Another `@RestController` + service | Not started |
+| 8 | **Events end to end** (tables from 6a): CRUD for draft events in an active layout (with the hall reservation, sales times and per-customer limit); delete only events that aren't announced; event series (create, rename, list a series' events by date, put an event in a series or take it out, delete an empty series); a venue that a confirmed event uses keeps its place: its `address` and `location` can no longer change (its name and description still can, e.g. a sponsor rename), so past events don't seem to have taken place somewhere else; a venue that moves is a new venue | Another `@RestController` + service | Not started |
 | 9 | **Ticket tiers, types and prices end to end** (tables from 6a): tiers (name, description, kind, an optional per-customer limit), the event's ticket types (public, or admin-only such as a "Comp" type), and the price of each type in each tier (integer minor units in the event's currency); giving a tier seats (whole sections or single seats) or standing quantities creates their tickets in bulk (`INSERT … SELECT`, `generate_series`), with the event locked; a tier sold as whole sections (boxes, tables) is given whole sections only, never split with another tier | Child entities + bulk inserts + validation rules | Not started |
 | 10 | **The event lifecycle:** a pure Go status table (draft, submitted, confirmed, announced, cancelled) with compare-and-set updates for submit (claims the hall slot), confirm, decline (back to draft with a reason), withdraw, announce and reschedule; announce checks (the event is confirmed, the layout is active, every `single` or `shared` tier has a price and every `pass_only` tier is used by a pass, standing tickets fit their sections, all tickets fit the hall's capacity) in one transaction | Enum state machine + `@Transactional` service method | Not started |
 | 11 | Cancel and edit rules: after announcing, unsold tickets can still be moved between tiers, held, released and killed, and prices changed for new bookings (decided 2026-11-23), enforced with locks so sold inventory can't be changed or removed underneath customers (invariant I14); layouts used by a confirmed event are frozen and can be copied (the copy's seats keep their `physical_seat_key`); **admin holds and kills** on an announced event's tickets (table from 6a) | Domain rules + pessimistic locking | Not started |
@@ -317,7 +315,7 @@ standing section.
   Postgres (each operation and refusal, ten concurrent updates from one version have one winner,
   restoring onto a name taken meanwhile, a deterministic lock-order test that fails if the hall
   is locked before the venue, a failing database) and every endpoint through the whole stack.
-- **Step 6c (in progress, queries done):** `internal/event/queries/layouts.sql`: create (a
+- **Step 6c (done):** `internal/event/queries/layouts.sql`: create (a
   draft, version 1), get, get-and-lock (`FOR UPDATE`), list a hall's layouts with one status (by
   name ignoring case, then id, no paging), update (name and description of a draft or active
   layout, compare-and-set on the version; a layout never changes hall), one compare-and-set
@@ -326,8 +324,29 @@ standing section.
   hall's shared lock for layout changes, after the venue's. Tests against real Postgres check each
   query, that an unknown hall breaks `layouts_hall_id_fkey`, that a taken name (on create, rename
   and restore; archived layouts don't count) breaks `layouts_hall_id_name_key`, and that archiving
-  a hall waits while its shared lock is held. Still to come: `LayoutService`, the endpoints and
-  their docs.
+  a hall waits while its shared lock is held. `internal/event/layout.go` (Layout, LayoutStatus,
+  ErrLayoutNameTaken), `layout_input.go` (LayoutInput and its validation) and
+  `layout_service.go`: `LayoutService.Create` checks the input, then in one transaction locks
+  the venue and then the hall `FOR SHARE`, refuses an archived venue (ErrVenueArchived, reported
+  first, since the hall can't be restored before its venue) or hall (ErrHallArchived), and
+  inserts a draft; a taken name is ErrLayoutNameTaken. Tests: every rule and refusal, ten
+  concurrent creates with one name have one winner, a deterministic lock-order test (verified to
+  fail when the hall is locked first), a failing database. `POST /api/v1/admin/halls/{id}/layouts`
+  (`httpapi/layouts.go`) answers 201 with the draft, its ETag and a Location of
+  `/api/v1/admin/layouts/{id}`; a taken name is a 409 "another layout of this hall already has
+  this name"; `cmd/ticketing` creates the service. Endpoint tests through the whole stack: 201,
+  400, 404, the 409s (archived hall, archived venue, both, taken name), 415, 500. **The rest end
+  to end:** `LayoutService` gains Get, List (a hall's layouts of one status), Update (name and
+  description of a draft or active layout), Activate (a draft with at least one section,
+  ErrLayoutHasNoSections otherwise), Archive (from draft or active), Restore (always as a draft)
+  and Delete (one compare-and-set statement, no parent lock, also in an archived hall or venue).
+  The venue and hall checks of Create and of every change share one helper (`lockHall`); a
+  change then locks the layout `FOR UPDATE` and checks its version, an archived venue or hall
+  being refused before the version. Endpoints: `GET /halls/{id}/layouts`, `GET`, `PATCH` and
+  `DELETE /layouts/{id}`, `POST /layouts/{id}/activate`, `/archive` and `/restore`. Tests: the
+  service (every rule and refusal, ten concurrent updates with one winner, a deterministic
+  lock-order test with the venue or the hall held, verified to fail when the layout or the hall
+  is locked too early, a failing database) and every endpoint through the whole stack.
 
 ### Planned M1 endpoints
 

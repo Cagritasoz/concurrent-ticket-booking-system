@@ -27,7 +27,8 @@ func writeServiceError(c *gin.Context, logger *slog.Logger, err error) {
 	switch {
 	case errors.As(err, &invalid): // errors.As also fills invalid, so its Fields can be sent
 		writeValidationProblem(c, invalid.Fields)
-	case errors.Is(err, event.ErrVenueNotFound), errors.Is(err, event.ErrHallNotFound):
+	case errors.Is(err, event.ErrVenueNotFound), errors.Is(err, event.ErrHallNotFound),
+		errors.Is(err, event.ErrLayoutNotFound):
 		writeProblem(c, http.StatusNotFound, err.Error())
 	case errors.Is(err, event.ErrVersionMismatch):
 		writeProblem(c, http.StatusPreconditionFailed, versionMismatchDetail)
@@ -41,6 +42,14 @@ func writeServiceError(c *gin.Context, logger *slog.Logger, err error) {
 		writeProblem(c, http.StatusConflict, err.Error())
 	case errors.Is(err, event.ErrHallNameTaken):
 		writeProblem(c, http.StatusConflict, "another hall of this venue already has this name")
+	case errors.Is(err, event.ErrLayoutArchived):
+		writeProblem(c, http.StatusConflict, "layout is archived: restore it first")
+	case errors.Is(err, event.ErrLayoutNotArchived), errors.Is(err, event.ErrLayoutAlreadyActive):
+		writeProblem(c, http.StatusConflict, err.Error())
+	case errors.Is(err, event.ErrLayoutHasNoSections):
+		writeProblem(c, http.StatusConflict, "layout has no sections: add one before activating it")
+	case errors.Is(err, event.ErrLayoutNameTaken):
+		writeProblem(c, http.StatusConflict, "another layout of this hall already has this name")
 	default: // Handle unexpected errors.
 		logger.ErrorContext(c.Request.Context(), "request failed", "error", err)
 		writeProblem(c, http.StatusInternalServerError, "")

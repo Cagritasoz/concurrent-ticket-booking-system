@@ -128,6 +128,14 @@ Unknown routes get Gin's default `404 page not found`.
 | POST | `/api/v1/admin/halls/{id}/archive` | `200` with the archived hall and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a hall.** Needs `If-Match`. |
 | POST | `/api/v1/admin/halls/{id}/restore` | `200` with the active hall and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived hall.** Needs `If-Match`. |
 | DELETE | `/api/v1/admin/halls/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a hall.** Needs `If-Match`. |
+| POST | `/api/v1/admin/halls/{id}/layouts` | `201` with the layout (a `draft`), its `ETag` and a `Location` header (`/api/v1/admin/layouts/{layout id}`), or `400` / `404` / `409` / `413` / `415` | **Create a layout** in an active hall of an active venue. |
+| GET | `/api/v1/admin/halls/{id}/layouts?status=active` | `200` with `{"layouts": [...]}`, or `400` (bad `status`) / `404` (no such hall) | **List a hall's layouts** of one status (`draft`, `active`, the default, or `archived`), sorted by name, all at once (no paging). |
+| GET | `/api/v1/admin/layouts/{id}` | `200` with the layout and its `ETag`, or `404` | **Read a layout**, archived ones too. |
+| PATCH | `/api/v1/admin/layouts/{id}` | `200` with the changed layout and its new `ETag`, or `400` / `404` / `409` / `412` / `413` / `415` / `428` | **Change a layout's name or description** (JSON Merge Patch), as a draft or active. Needs `If-Match`. |
+| POST | `/api/v1/admin/layouts/{id}/activate` | `200` with the active layout and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Activate a draft** that has at least one section. Needs `If-Match`. |
+| POST | `/api/v1/admin/layouts/{id}/archive` | `200` with the archived layout and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a layout**, a draft or active. Needs `If-Match`. |
+| POST | `/api/v1/admin/layouts/{id}/restore` | `200` with the layout, a `draft` again, and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived layout**, always as a draft. Needs `If-Match`. |
+| DELETE | `/api/v1/admin/layouts/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a layout** and its sections and seats. Needs `If-Match`. |
 
 ### Admin API
 
@@ -298,6 +306,39 @@ halls that were active before. **Deleting a hall** (`204`) also deletes
 its layouts, their sections and seats; once events exist (M1 step 8), a hall any event uses can
 only be archived.
 
+**Layouts** are nested the same way, one level down: `POST /halls/{id}/layouts` creates one and
+`GET /halls/{id}/layouts` lists them; after that a layout is named by its own id
+(`/layouts/{id}`). Reading, changing, archiving and deleting a layout work as for halls (`ETag`,
+`If-Match`, JSON Merge Patch with `null` clearing `description`; `hall_id` and `status` are
+unknown fields). What differs is the status, three of them:
+
+```
+draft ──activate──> active        draft or active ──archive──> archived ──restore──> draft
+```
+
+- **A new layout is a `draft`** (version 1): it is set up over many requests and no event can use
+  it yet. **Activate** makes it `active`, so events can be created in it; it needs at least one
+  section (409 "layout has no sections: add one before activating it"), and activating an active
+  layout is a 409 "layout is already active".
+- **Archive** works from a draft or an active layout. **Restore** always brings a layout back as
+  a `draft`, whatever it was before: it is offered for events again only after a deliberate
+  activate, which runs its checks again. An archived layout can't be changed, activated or
+  archived again (409 "layout is archived: restore it first").
+- **PATCH** changes a draft's or an active layout's name and description; they are labels, and
+  what an event sells is in the sections.
+- **The list** has one status at a time (`?status=draft`, `active`, the default, or `archived`),
+  sorted by name ignoring case, as `{"layouts": [...]}`.
+
+**A layout of an archived hall, or of a hall of an archived venue, counts as archived**, as a hall
+of an archived venue does: it can be read, listed and deleted, but every change is a 409 ("hall
+is archived: restore it first", or "venue is archived: restore it first", which comes first when
+both are, since the hall can't be restored before its venue), whatever `If-Match` says. A name
+another layout of the hall has (ignoring case; drafts and active layouts count, archived ones
+don't) is a 409 on create, rename and restore, decided by the unique index as for halls. Every
+change locks the venue and then the hall with shared locks (`FOR SHARE`), then the layout (`FOR
+UPDATE`), the parent before the child. **Deleting a layout** (`204`) also deletes its sections and
+their seats; once events exist (M1 step 8), a layout any event uses can only be archived.
+
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
 
@@ -312,10 +353,14 @@ application/problem+json`:
 | `400` | a body that can't be read: empty, not valid JSON, a value of the wrong type, an unknown field, more than one object | what is wrong, e.g. `unknown field "nmae"` or `location.latitude must be a number` |
 | `400` | an `If-Match` that isn't one ETag as the API sends it | "the If-Match header must be one ETag exactly as this API sent it, e.g. \"3\"" |
 | `404` | no venue has the id, or the id isn't a UUID (also for `/venues/{id}/halls`) | "venue not found" |
-| `404` | no hall has the id, or the id isn't a UUID | "hall not found" |
-| `409` | changing or archiving an archived venue, or creating, changing, archiving or restoring a hall in one; restoring an active venue | "venue is archived: restore it first" / "venue is not archived" |
-| `409` | changing or archiving an archived hall; restoring an active one | "hall is archived: restore it first" / "hall is not archived" |
+| `404` | no hall has the id, or the id isn't a UUID (also for `/halls/{id}/layouts`) | "hall not found" |
+| `404` | no layout has the id, or the id isn't a UUID | "layout not found" |
+| `409` | changing or archiving an archived venue, or creating, changing, archiving or restoring a hall in one, or any change to a layout of one of its halls; restoring an active venue | "venue is archived: restore it first" / "venue is not archived" |
+| `409` | changing or archiving an archived hall, or creating or changing a layout in one; restoring an active one | "hall is archived: restore it first" / "hall is not archived" |
 | `409` | creating, renaming or restoring a hall onto a name another active hall of the venue has (ignoring case) | "another hall of this venue already has this name" |
+| `409` | changing, activating or archiving an archived layout; restoring a draft or active one; activating an active one | "layout is archived: restore it first" / "layout is not archived" / "layout is already active" |
+| `409` | activating a layout without sections | "layout has no sections: add one before activating it" |
+| `409` | creating, renaming or restoring a layout onto a name another layout of the hall has (ignoring case; archived layouts don't count) | "another layout of this hall already has this name" |
 | `412` | `If-Match` names a version that isn't the current one | "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
 | `415` | `Content-Type` isn't `application/json` (for PATCH also `application/merge-patch+json`) | what to send instead |
@@ -323,8 +368,8 @@ application/problem+json`:
 | `500` | anything unexpected, e.g. the database fails | none; the cause is logged as `request failed` at ERROR, with the request ID |
 
 The checks run in this order: the id (404), then `If-Match` (428 / 400), then the body (415, 413,
-400), then the service (404, 412, 409, 400; for a hall, an archived venue's 409 comes before
-the 412). A missing `location.latitude` or
+400), then the service (404, 412, 409, 400; for a hall or a layout, an archived parent's 409
+comes before the 412). A missing `location.latitude` or
 `location.longitude` is checked in the handler, before the service, so it is reported on its
 own, before the other field problems. The `/healthz` and `/readyz` bodies, Gin's
 `404 page not found` for unknown routes and the recovery middleware's 500 don't use this format yet.

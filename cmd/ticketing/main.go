@@ -95,9 +95,10 @@ func run(ctx context.Context) error {
 	// what Spring's ApplicationContext does with @Service beans and @Autowired.
 	venues := event.NewVenueService(pool)
 	halls := event.NewHallService(pool)
+	layouts := event.NewLayoutService(pool)
 
 	readiness := &httpapi.Readiness{} // Set to false as its zero value.
-	router := httpapi.NewRouter(logger, readiness, pool, venues, halls)
+	router := httpapi.NewRouter(logger, readiness, pool, venues, halls, layouts)
 
 	// Open the port first, then mark the app ready: /readyz only says "ready" once we can
 	// actually accept connections.

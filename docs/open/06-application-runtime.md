@@ -137,6 +137,11 @@ Unknown routes get Gin's default `404 page not found`.
 | POST | `/api/v1/admin/layouts/{id}/archive` | `200` with the archived layout and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Archive a layout**, a draft or active. Needs `If-Match`. |
 | POST | `/api/v1/admin/layouts/{id}/restore` | `200` with the layout, a `draft` again, and its new `ETag`, or `400` / `404` / `409` / `412` / `428` | **Restore an archived layout**, always as a draft. Needs `If-Match`. |
 | DELETE | `/api/v1/admin/layouts/{id}` | `204` with no body, or `400` / `404` / `412` / `428` | **Delete a layout** and its sections and seats. Needs `If-Match`. |
+| POST | `/api/v1/admin/layouts/{id}/sections` | `201` with the section, its `ETag` and a `Location` header (`/api/v1/admin/sections/{section id}`), or `400` / `404` / `409` / `413` / `415` | **Create a section** in a draft layout. |
+| GET | `/api/v1/admin/layouts/{id}/sections` | `200` with `{"sections": [...]}`, or `404` (no such layout) | **List a layout's sections** in its order (position, then name), all at once. |
+| GET | `/api/v1/admin/sections/{id}` | `200` with the section and its `ETag`, or `404` | **Read a section.** |
+| PATCH | `/api/v1/admin/sections/{id}` | `200` with the changed section and its new `ETag`, or `400` / `404` / `409` / `412` / `413` / `415` / `428` | **Change a section's name, capacity or position** (JSON Merge Patch) in a draft layout. Needs `If-Match`. |
+| DELETE | `/api/v1/admin/sections/{id}` | `204` with no body, or `400` / `404` / `409` / `412` / `428` | **Delete a section** of a draft layout, and its seats. Needs `If-Match`. |
 
 ### Admin API
 
@@ -345,6 +350,33 @@ change locks the venue and then the hall with shared locks (`FOR SHARE`), then t
 UPDATE`), the parent before the child. **Deleting a layout** (`204`) also deletes its sections and
 their seats; once events exist (M1 step 8), a layout any event uses can only be archived.
 
+**Sections** are nested one level further: `POST /layouts/{id}/sections` creates one and `GET
+/layouts/{id}/sections` lists them; after that a section is `/sections/{id}`. A section has no
+status (it is part of its layout's definition), but its own version: the `ETag`, `If-Match`
+(428 / 412) and JSON Merge Patch work as for layouts, and changing a section doesn't change the
+layout's version.
+
+- **The body** is `{"name", "kind", "capacity", "position"}`. `kind` is `seated` (it will have
+  seats, M1 step 7) or `standing` (general admission), chosen at creation and never changed:
+  PATCH doesn't accept it (`unknown field "kind"`); to change it, delete the section and create
+  another. A standing section needs a `capacity` (1 or more); a seated one has none, since its
+  seats are its capacity (null in responses). The name is at most 100 characters and unique in
+  the layout ignoring case; every section counts, whatever its kind (409 "another section of this
+  layout already has this name").
+- **`position`** orders the layout's list (1 first): without one a new section goes after the
+  last one; PATCH can move a section, one at a time. Positions aren't unique (equal ones are
+  listed by name) and are at most 10,000.
+- **Only a draft layout's sections change.** Create, PATCH and DELETE on an active layout are a
+  409 "layout is active: deactivate it first", so an active layout is always one that passed
+  activate's checks (an active layout can't lose its last section). An archived layout, hall or
+  venue is the 409 of the topmost one, before the version is checked. Reading and listing work
+  whatever the status. Unlike deleting a hall or a layout, **deleting a section** needs a draft
+  layout too; its seats are deleted with it.
+- Every change locks the venue, the hall and the layout with shared locks (`FOR SHARE`) and then
+  the section (`FOR UPDATE`): two admins can change different sections of one draft at the same
+  time, while activating the layout waits for them and a change that comes after an activation is
+  refused.
+
 Errors from the admin API are **RFC 9457 Problem Details** with `Content-Type:
 application/problem+json`:
 
@@ -360,13 +392,16 @@ application/problem+json`:
 | `400` | an `If-Match` that isn't one ETag as the API sends it | "the If-Match header must be one ETag exactly as this API sent it, e.g. \"3\"" |
 | `404` | no venue has the id, or the id isn't a UUID (also for `/venues/{id}/halls`) | "venue not found" |
 | `404` | no hall has the id, or the id isn't a UUID (also for `/halls/{id}/layouts`) | "hall not found" |
-| `404` | no layout has the id, or the id isn't a UUID | "layout not found" |
+| `404` | no layout has the id, or the id isn't a UUID (also for `/layouts/{id}/sections`) | "layout not found" |
+| `404` | no section has the id, or the id isn't a UUID | "section not found" |
 | `409` | changing or archiving an archived venue, or creating, changing, archiving or restoring a hall in one, or any change to a layout of one of its halls; restoring an active venue | "venue is archived: restore it first" / "venue is not archived" |
 | `409` | changing or archiving an archived hall, or creating or changing a layout in one; restoring an active one | "hall is archived: restore it first" / "hall is not archived" |
 | `409` | creating, renaming or restoring a hall onto a name another active hall of the venue has (ignoring case) | "another hall of this venue already has this name" |
 | `409` | changing, activating, deactivating or archiving an archived layout; restoring a draft or active one; activating an active one; deactivating a draft | "layout is archived: restore it first" / "layout is not archived" / "layout is already active" / "layout is not active" |
 | `409` | activating a layout without sections | "layout has no sections: add one before activating it" |
 | `409` | creating, renaming or restoring a layout onto a name another layout of the hall has (ignoring case; archived layouts don't count) | "another layout of this hall already has this name" |
+| `409` | creating, changing or deleting a section of an active layout | "layout is active: deactivate it first" |
+| `409` | creating or renaming a section onto a name another section of the layout has (ignoring case) | "another section of this layout already has this name" |
 | `412` | `If-Match` names a version that isn't the current one | "it has changed since you read it: GET it again, then repeat your request with its new ETag in If-Match" |
 | `413` | body over 64 KiB | "the request body must be at most 65536 bytes" |
 | `415` | `Content-Type` isn't `application/json` (for PATCH also `application/merge-patch+json`) | what to send instead |
@@ -374,8 +409,8 @@ application/problem+json`:
 | `500` | anything unexpected, e.g. the database fails | none; the cause is logged as `request failed` at ERROR, with the request ID |
 
 The checks run in this order: the id (404), then `If-Match` (428 / 400), then the body (415, 413,
-400), then the service (404, 412, 409, 400; for a hall or a layout, an archived parent's 409
-comes before the 412). A missing `location.latitude` or
+400), then the service (404, 412, 409, 400; for a hall, a layout or a section, an archived
+parent's 409, and for a section an active layout's, comes before the 412). A missing `location.latitude` or
 `location.longitude` is checked in the handler, before the service, so it is reported on its
 own, before the other field problems. The `/healthz` and `/readyz` bodies, Gin's
 `404 page not found` for unknown routes and the recovery middleware's 500 don't use this format yet.

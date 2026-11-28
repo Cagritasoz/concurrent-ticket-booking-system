@@ -44,7 +44,7 @@ func newVenueRouter(t *testing.T) (http.Handler, *pgxpool.Pool, *bytes.Buffer) {
 		t.Fatalf("NewLogger: %v", err)
 	}
 	return NewRouter(logger, &Readiness{}, pool, event.NewVenueService(pool), event.NewHallService(pool),
-		event.NewLayoutService(pool)), pool, &logs
+		event.NewLayoutService(pool), event.NewSectionService(pool)), pool, &logs
 }
 
 // insertVenue stores a venue with the generated query, so the read tests don't depend on POST.

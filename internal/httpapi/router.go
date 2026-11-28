@@ -22,7 +22,8 @@ func init() {
 // NewRouter builds the Gin engine with its middleware and routes. The services are passed in
 // ready-made (created in cmd/ticketing), like beans injected into a controller's constructor.
 func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger,
-	venues *event.VenueService, halls *event.HallService, layouts *event.LayoutService) *gin.Engine {
+	venues *event.VenueService, halls *event.HallService, layouts *event.LayoutService,
+	sections *event.SectionService) *gin.Engine {
 	// gin.New() starts with no middleware. gin.Default() would add Gin's own logger and recovery,
 	// which write plain text to the console. We add our own so every log line goes through slog.
 	router := gin.New()
@@ -83,6 +84,13 @@ func NewRouter(logger *slog.Logger, readiness *Readiness, database Pinger,
 	admin.POST("/layouts/:id/deactivate", layoutRoutes.deactivate)
 	admin.POST("/layouts/:id/archive", layoutRoutes.archive)
 	admin.POST("/layouts/:id/restore", layoutRoutes.restore)
+
+	sectionRoutes := sectionHandler{service: sections, logger: logger}
+	admin.POST("/layouts/:id/sections", sectionRoutes.create)
+	admin.GET("/layouts/:id/sections", sectionRoutes.list)
+	admin.GET("/sections/:id", sectionRoutes.get)
+	admin.PATCH("/sections/:id", sectionRoutes.update)
+	admin.DELETE("/sections/:id", sectionRoutes.delete)
 
 	return router
 }
